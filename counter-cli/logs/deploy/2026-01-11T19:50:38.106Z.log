@@ -1,0 +1,9 @@
+{"level":30,"time":1768161038115,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"Starting contract deployment..."}
+{"level":30,"time":1768161038119,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"No mnemonic found in .env, creating fresh wallet..."}
+{"level":40,"time":1768161038120,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"NOTE: You will need to fund this wallet from the faucet: https://faucet.preview.midnight.network/"}
+{"level":30,"time":1768161038123,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"Generated new wallet mnemonic: juice present drama humor produce sick secret laptop boil omit fun tank soldier increase cram basket cable any wisdom bundle analyst all suffer fish"}
+{"level":30,"time":1768161038124,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"Building wallet from mnemonic..."}
+{"level":30,"time":1768161038547,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"Your wallet address: mn_addr_preview1k93z0yz7d73m2nx5d47q8ewpzf6tytwgr0phu6el5yg990vhl8usxddvd5"}
+{"level":30,"time":1768161038548,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"Waiting for wallet to sync..."}
+{"level":30,"time":1768161038571,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"Waiting for wallet sync. Synced: false"}
+{"level":30,"time":1768161110285,"pid":35963,"hostname":"MacBook-Air-5.local","msg":"Waiting for wallet sync. Synced: false"}

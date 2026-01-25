@@ -1,0 +1,5 @@
+
+> @meshsdk/shadowcipher-contract@0.1.0 compact
+> compact compile +0.27.0 src/shadowcipher.compact src/managed/shadowcipher
+
+Compiling 2 circuits:

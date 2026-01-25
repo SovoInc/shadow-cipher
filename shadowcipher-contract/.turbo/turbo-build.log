@@ -1,0 +1,4 @@
+
+> @meshsdk/shadowcipher-contract@0.1.0 build
+> rm -rf dist && tsc --project tsconfig.build.json && cp -Rf ./src/managed ./dist/managed && cp ./src/shadowcipher.compact ./dist
+
