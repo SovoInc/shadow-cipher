@@ -1,5 +1,0 @@
-
-> @eddalabs/counter-contract@0.1.0 compact
-> compact compile +0.27.0 src/counter.compact src/managed/counter
-
-Compiling 1 circuits:

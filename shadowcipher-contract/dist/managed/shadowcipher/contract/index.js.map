@@ -1,8 +1,0 @@
-{
-  "version": 3,
-  "file": "index.js",
-  "sourceRoot": "../../../../",
-  "sources": ["src/shadowcipher.compact"],
-  "names": [],
-  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAAA;;;;;;;;;;MAWA,AAAA,UAGC;;;;;cAHyB,gBAAyB;;;;;;;;;;;;;;;;;;yCAAzB,gBAAyB;;;;;;;;;4CAAzB,gBAAyB;;;OAGlD;MAID,AAAA,YAGC;;;;;cAH2B,WAAkB;;;;;;;;;;;;;;;;;;yCAAlB,WAAkB;;;;;;;;;8CAAlB,WAAkB;;;OAG7C;;;;;;GACA;EAtBD;;;;;;;;;;;;;;;;;;;;;;;;;;;;;IAKA;;;;;;;;;yEAAoC;IACpC;;;;;;;;;yEAAgC;IAChC;;;;;;;;;yEAA8B;;;;;;;GAe7B;EAXD,AAAA,aAGC,4BAHyB,gBAAyB;IACjD;;;;;;;2HAAsB,gBAAc;;yEAA1B;IACV;;;;;;;;;yEAAM;;GACP;EAID,AAAA,eAGC,4BAH2B,WAAkB;UAC5C,KAAQ;IAAR;;;;;;;;;;6FAAA,KAAQ;;;;wEAAA;IACR;;;;;;;2HAAkB,WAAS;;yEAArB;;GACP;;;;;;;;;;;;;;;;IAhBD;qCAAA;;;;;;;;;;;0GAAoC;KAAA;IACpC;qCAAA;;;;;;;;;;;0GAAgC;KAAA;IAChC;qCAAA;;;;;;;;;;;0GAA8B;KAAA;;;;;;;;;;"
-}
