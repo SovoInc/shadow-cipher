@@ -66,5 +66,11 @@ export default defineConfig(({ mode }) => ({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      '/api': {
+        target: 'https://midnight-shadow-cipher.vercel.app',
+        changeOrigin: true,
+      },
+    },
   },
 }))
