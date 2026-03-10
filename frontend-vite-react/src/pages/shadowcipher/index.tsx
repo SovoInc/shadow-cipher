@@ -23,11 +23,13 @@ export const ShadowCipher = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
   
-  const { status, setOpen, dustAddress } = useWallet();
+  const { status, setOpen, dustAddress, dustBalance } = useWallet();
+  const networkName = status?.status === 'connected' ? (status.networkId ?? 'unknown').toUpperCase() : 'OFFLINE';
   const isWalletConnected = status?.status === 'connected';
-  
+
   const { controller, contractAddress, isDeploying, deployError, deployContract } = useShadowCipherContract();
   const [useOnChain, setUseOnChain] = useState(false); // Toggle for on-chain vs demo mode
+  const [demoFallback, setDemoFallback] = useState(false); // True when on-chain failed and fell back to demo
 
   const [isBooted, setIsBooted] = useState(false);
   const [isTerminalBooting, setIsTerminalBooting] = useState(false);
@@ -43,6 +45,11 @@ export const ShadowCipher = () => {
   const [circuitLabel, setCircuitLabel] = useState('SYSTEM_IDLE');
   const [sessionId] = useState(`0x${Math.random().toString(16).slice(2, 6).toUpperCase()}`);
   const [showHelp, setShowHelp] = useState(true); // Show help on first boot
+  const [leaderboard, setLeaderboard] = useState<Array<{ address: string; displayName?: string; score: number }>>([]);
+  const [showNameEntry, setShowNameEntry] = useState(false);
+  const [arcadeName, setArcadeName] = useState(['A', 'A', 'A']);
+  const [nameSlot, setNameSlot] = useState(0);
+  const [scoreSubmitted, setScoreSubmitted] = useState(false);
 
   const addLog = useCallback((text: string, type: 'info' | 'proof' | 'cmd' = 'info') => {
     const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -61,14 +68,34 @@ export const ShadowCipher = () => {
     setBootLines(prev => [...prev, '']);
   };
 
+  const DEPLOY_TIMEOUT_MS = 180_000; // 3 minute timeout for deployment
+
   const runTerminalBoot = async (onChain: boolean = false) => {
     setIsTerminalBooting(true);
     setBootLines(['']);
     setUseOnChain(onChain);
+    setDemoFallback(false);
 
+    // Pre-check DUST balance for on-chain mode — hard block
+    if (onChain && (!dustBalance || dustBalance.balance === 0n)) {
+      setBootLines([
+        '[ERR] DUST balance is 0. Cannot deploy contract.',
+        '',
+        'Generate DUST in Lace wallet, then try again.',
+        'Falling back to demo mode...',
+        '',
+      ]);
+      addLog('Blocked: 0 DUST — generate DUST in Lace wallet first', 'info');
+      onChain = false;
+      setUseOnChain(false);
+      setDemoFallback(true);
+      await sleep(2000);
+    }
+
+    const net = networkName.toLowerCase();
     const commands = [
-      { t: 'midnight-connect --node preview-v1 --proof-server local', delay: 400 },
-      { t: onChain ? 'shadowcipher deploy --network preview' : 'shadowcipher start --mode demo', delay: 600 },
+      { t: `midnight-connect --node ${net} --proof-server local`, delay: 400 },
+      { t: onChain ? `shadowcipher deploy --network ${net}` : 'shadowcipher start --mode demo', delay: 600 },
     ];
 
     for (const cmd of commands) {
@@ -81,33 +108,44 @@ export const ShadowCipher = () => {
       addLog(`> ${cmd.t}`, 'cmd');
     }
 
+
     // If on-chain mode, deploy the contract
     if (onChain) {
-      setBootLines(prev => [...prev, 'Deploying contract to Preview network...', '']);
-      addLog('Deploying smart contract...', 'proof');
-      
+      setBootLines(prev => [...prev, `Deploying contract to ${networkName} network...`, '', 'ZK proof generation may take 1–3 minutes...', '']);
+      addLog('Deploying smart contract (this may take a few minutes)...', 'proof');
+
       try {
-        const deployedController = await deployContract();
+        // Race deployment against a timeout
+        const deployedController = await Promise.race([
+          deployContract(),
+          new Promise<null>((_, reject) =>
+            setTimeout(() => reject(new Error('Deploy timed out after 3 minutes')), DEPLOY_TIMEOUT_MS)
+          ),
+        ]);
+
         if (deployedController) {
           setBootLines(prev => [...prev, `[OK] Contract deployed: ${deployedController.deployedContractAddress.slice(0, 16)}...`, '']);
           addLog(`Contract deployed: ${deployedController.deployedContractAddress}`, 'info');
-          
+
           // Use secret from controller
           const newSecret = deployedController.getSecret();
           setSecret(newSecret);
         } else {
           setBootLines(prev => [...prev, '[ERR] Deployment failed. Falling back to demo mode.', '']);
-          addLog('Deployment failed, using demo mode', 'info');
+          addLog(`Deployment failed${deployError ? ': ' + deployError : ''}, using demo mode`, 'info');
           const newSecret = generateRandomSecret();
           setSecret(newSecret);
           setUseOnChain(false);
+          setDemoFallback(true);
         }
       } catch (e) {
-        setBootLines(prev => [...prev, `[ERR] ${e}. Using demo mode.`, '']);
-        addLog(`Error: ${e}`, 'info');
+        const errMsg = e instanceof Error ? e.message : String(e);
+        setBootLines(prev => [...prev, `[ERR] ${errMsg}`, '', 'Falling back to demo mode.', '']);
+        addLog(`Deploy error: ${errMsg}`, 'info');
         const newSecret = generateRandomSecret();
         setSecret(newSecret);
         setUseOnChain(false);
+        setDemoFallback(true);
       }
     } else {
       // Demo mode - just generate local secret
@@ -123,7 +161,7 @@ export const ShadowCipher = () => {
 
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (gameOver || isProving || !isBooted) return;
-    
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -133,12 +171,15 @@ export const ShadowCipher = () => {
     const w = rect.width;
     const h = rect.height;
 
-    const inputY = h - 60;
-    
+    // Must match draw() responsive calculations
+    const inputSpacing = Math.min(50, w * 0.12);
+    const inputR = Math.min(18, w * 0.04);
+    const inputY = h - 50;
+
     for (let i = 0; i < 4; i++) {
-      const cx = w / 2 - 75 + i * 50;
+      const cx = w / 2 - inputSpacing * 1.5 + i * inputSpacing;
       const dist = Math.sqrt((x - cx) ** 2 + (y - inputY) ** 2);
-      if (dist < 20) {
+      if (dist < inputR + 6) {
         setCurrentGuess(prev => {
           const newGuess = [...prev] as [number, number, number, number];
           newGuess[i] = (newGuess[i] + 1) % 6;
@@ -174,6 +215,14 @@ export const ShadowCipher = () => {
         if (result.black === 4) {
           setGameOver(true);
           addLog('CIPHER DECRYPTED! Win recorded on-chain.', 'info');
+          // On-chain mode: auto-submit with wallet address
+          const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+          submitScore(walletName);
+        } else if (guesses.length + 1 >= 10) {
+          setGameOver(true);
+          addLog('ACCESS_REVOKED. Maximum attempts reached.', 'info');
+          const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+          submitScore(walletName);
         }
       } else {
         // Demo mode: local verification
@@ -193,6 +242,11 @@ export const ShadowCipher = () => {
         if (result.black === 4) {
           setGameOver(true);
           addLog('CIPHER DECRYPTED. BROADCASTING WIN...', 'info');
+          setShowNameEntry(true); // Show arcade name entry
+        } else if (guesses.length + 1 >= 10) {
+          setGameOver(true);
+          addLog('ACCESS_REVOKED. Maximum attempts reached.', 'info');
+          setShowNameEntry(true); // Show arcade name entry even on loss
         }
       }
     } catch (e) {
@@ -202,6 +256,52 @@ export const ShadowCipher = () => {
     setCircuitLabel('SYSTEM_IDLE');
     setProgress(0);
     setIsProving(false);
+  };
+
+  const submitScore = async (name: string) => {
+    const won = guesses.length > 0 && guesses[guesses.length - 1].black === 4;
+    const attempts = guesses.length;
+    const address = useOnChain && dustAddress?.dustAddress
+      ? dustAddress.dustAddress.slice(0, 16)
+      : `DMO_${name}`;
+
+    try {
+      await fetch('/api/metrics/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address,
+          displayName: name,
+          attempts,
+          won,
+          mode: useOnChain ? 'on-chain' : 'demo',
+        }),
+      });
+      addLog(`Score recorded: ${name} — ${attempts} attempts`, 'info');
+      // Refresh leaderboard
+      const lb = await fetch('/api/metrics/leaderboard?limit=5').then(r => r.ok ? r.json() : null);
+      if (lb?.entries) setLeaderboard(lb.entries);
+    } catch {
+      addLog('Could not record score (API unavailable)', 'info');
+    }
+    setScoreSubmitted(true);
+  };
+
+  const handleNameSubmit = () => {
+    const name = arcadeName.join('');
+    setShowNameEntry(false);
+    submitScore(name);
+  };
+
+  const cycleNameChar = (slot: number, direction: number) => {
+    setArcadeName(prev => {
+      const next = [...prev];
+      const code = next[slot].charCodeAt(0) + direction;
+      if (code > 90) next[slot] = 'A';
+      else if (code < 65) next[slot] = 'Z';
+      else next[slot] = String.fromCharCode(code);
+      return next;
+    });
   };
 
   const reboot = () => {
@@ -238,77 +338,93 @@ export const ShadowCipher = () => {
 
       ctx.clearRect(0, 0, w, h);
 
+      // Responsive scaling factors
+      const rowH = Math.floor((h - 100) / 10);
+      const topPad = Math.min(30, h * 0.04);
+      const labelW = Math.max(40, w * 0.1);
+      const gridL = labelW + 8;
+      const gridR = w - 20;
+      const circR = Math.min(12, w * 0.025);
+      const circSpacing = Math.min(40, (gridR - gridL - 80) / 4);
+      const circStartX = gridL + 30;
+      const fontSize = Math.max(8, Math.min(10, w * 0.022));
+      const inputSpacing = Math.min(50, w * 0.12);
+      const inputR = Math.min(18, w * 0.04);
+
       // Draw grid rows
       for (let i = 0; i < 10; i++) {
-        const rowY = 35 + i * 42;
+        const rowY = topPad + i * rowH;
         ctx.strokeStyle = '#1a3a2a';
         ctx.lineWidth = 1;
-        ctx.strokeRect(55, rowY, w - 80, 36);
+        ctx.strokeRect(gridL, rowY, gridR - gridL, rowH - 4);
         ctx.fillStyle = '#1a3a2a';
-        ctx.font = '10px "JetBrains Mono", monospace';
-        ctx.fillText(`SEQ_${(i + 1).toString().padStart(2, '0')}`, 10, rowY + 22);
+        ctx.font = `${fontSize}px "JetBrains Mono", monospace`;
+        ctx.fillText(`SEQ_${(i + 1).toString().padStart(2, '0')}`, 4, rowY + rowH / 2 + 3);
       }
 
       // Draw guesses
       guesses.forEach((g, row) => {
-        const y = 35 + row * 42 + 18;
+        const y = topPad + row * rowH + rowH / 2;
         g.code.forEach((cIdx, col) => {
-          const cx = 85 + col * 40;
+          const cx = circStartX + col * circSpacing;
           ctx.fillStyle = COLORS[cIdx];
           ctx.shadowBlur = 8;
           ctx.shadowColor = COLORS[cIdx];
           ctx.beginPath();
-          ctx.arc(cx, y, 12, 0, Math.PI * 2);
+          ctx.arc(cx, y, circR, 0, Math.PI * 2);
           ctx.fill();
           ctx.shadowBlur = 0;
         });
 
         // Draw peg result - clear text format
-        const pegX = 245;
-        ctx.font = 'bold 10px "JetBrains Mono", monospace';
-        
+        const pegX = circStartX + 4 * circSpacing + 10;
+        ctx.font = `bold ${fontSize}px "JetBrains Mono", monospace`;
+
         // EXACT matches (green) - right color, right position
         ctx.fillStyle = '#00ff9d';
         ctx.fillText(`${g.black}✓`, pegX, y + 3);
-        
-        // CLOSE matches (yellow) - right color, wrong position  
+
+        // CLOSE matches (yellow) - right color, wrong position
         ctx.fillStyle = '#ffcc00';
-        ctx.fillText(`${g.white}~`, pegX + 30, y + 3);
+        ctx.fillText(`${g.white}~`, pegX + 28, y + 3);
 
         ctx.fillStyle = '#444';
-        ctx.font = '8px "JetBrains Mono", monospace';
-        ctx.fillText('OK', w - 22, y + 3);
+        ctx.font = `${Math.max(7, fontSize - 2)}px "JetBrains Mono", monospace`;
+        ctx.fillText('OK', w - 18, y + 3);
       });
 
       // Draw input or game over
       if (!gameOver) {
-        const inputY = h - 60;
+        const inputY = h - 50;
         ctx.fillStyle = '#333';
-        ctx.font = '10px "JetBrains Mono", monospace';
-        ctx.fillText('// PENDING_GUESS //', w / 2 - 70, inputY - 35);
+        ctx.font = `${fontSize}px "JetBrains Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillText('// PENDING_GUESS //', w / 2, inputY - 30);
+        ctx.textAlign = 'left';
 
         currentGuess.forEach((cIdx, i) => {
-          const cx = w / 2 - 75 + i * 50;
+          const cx = w / 2 - inputSpacing * 1.5 + i * inputSpacing;
           ctx.fillStyle = COLORS[cIdx];
           ctx.shadowBlur = 12;
           ctx.shadowColor = COLORS[cIdx];
           ctx.beginPath();
-          ctx.arc(cx, inputY, 18, 0, Math.PI * 2);
+          ctx.arc(cx, inputY, inputR, 0, Math.PI * 2);
           ctx.fill();
           ctx.shadowBlur = 0;
 
           ctx.strokeStyle = '#fff';
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(cx, inputY, 18, 0, Math.PI * 2);
+          ctx.arc(cx, inputY, inputR, 0, Math.PI * 2);
           ctx.stroke();
         });
       } else {
         ctx.fillStyle = '#00ff9d';
-        ctx.font = 'bold 24px "JetBrains Mono", monospace';
+        const endFontSize = Math.min(24, w * 0.045);
+        ctx.font = `bold ${endFontSize}px "JetBrains Mono", monospace`;
         ctx.textAlign = 'center';
         const lastGuess = guesses[guesses.length - 1];
-        ctx.fillText(lastGuess?.black === 4 ? 'CIPHER_CRACKED' : 'ACCESS_REVOKED', w / 2, h - 60);
+        ctx.fillText(lastGuess?.black === 4 ? 'CIPHER_CRACKED' : 'ACCESS_REVOKED', w / 2, h - 50);
         ctx.textAlign = 'left';
       }
 
@@ -324,6 +440,17 @@ export const ShadowCipher = () => {
       cancelAnimationFrame(animationId);
     };
   }, [isBooted, guesses, currentGuess, gameOver]);
+
+  // Fetch leaderboard from PRC-6 API
+  useEffect(() => {
+    if (!isBooted) return;
+    fetch('/api/metrics/leaderboard?limit=5')
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.entries) setLeaderboard(data.entries);
+      })
+      .catch(() => {}); // Silently fail if API unavailable
+  }, [isBooted]);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -629,6 +756,75 @@ export const ShadowCipher = () => {
           font-size: 10px;
           line-height: 1.8;
         }
+
+        /* Mobile responsive */
+        @media (max-width: 768px) {
+          .top-bar {
+            font-size: 9px;
+            padding: 0 10px;
+            height: 36px;
+            letter-spacing: 1px;
+            flex-wrap: wrap;
+            gap: 4px;
+          }
+          .top-bar .gem-sig,
+          .top-bar .mode-info {
+            display: none;
+          }
+          .main-container {
+            grid-template-columns: 1fr;
+            padding: 8px;
+            gap: 8px;
+            overflow-y: auto;
+          }
+          .canvas-wrapper {
+            min-height: 320px;
+            max-height: 50vh;
+          }
+          .sidebar {
+            gap: 8px;
+            max-height: 45vh;
+            overflow-y: auto;
+          }
+          .panel { padding: 10px; }
+          .terminal-log { height: 120px; }
+          .controls { gap: 6px; }
+          .btn { padding: 10px; font-size: 10px; }
+          .boot-logo {
+            font-size: 24px;
+            letter-spacing: 6px;
+          }
+          .boot-sub {
+            font-size: 10px;
+            letter-spacing: 2px;
+            margin-bottom: 30px;
+          }
+          .boot-btn {
+            padding: 14px 24px;
+            font-size: 11px;
+          }
+          .terminal-overlay {
+            padding: 20px;
+            font-size: 12px;
+            line-height: 1.6;
+          }
+          .help-overlay { padding: 15px; }
+          .help-content {
+            max-width: 95vw;
+            padding: 20px;
+            max-height: 85vh;
+            overflow-y: auto;
+          }
+          .help-title {
+            font-size: 14px;
+            letter-spacing: 2px;
+          }
+          .corner { width: 10px; height: 10px; }
+          .top-left { top: 5px; left: 5px; }
+          .top-right { top: 5px; right: 5px; }
+          .bottom-left { bottom: 5px; left: 5px; }
+          .bottom-right { bottom: 5px; right: 5px; }
+        }
       `}</style>
 
       {/* Boot Screen */}
@@ -637,37 +833,41 @@ export const ShadowCipher = () => {
           <div className="boot-logo">SHADOWCIPHER</div>
           <div className="boot-sub">MIDNIGHT NETWORK // ZERO-KNOWLEDGE PROTOCOL</div>
           
-          {!isWalletConnected ? (
-            <>
-              <div style={{ marginBottom: '15px' }}>
-                <MidnightWallet />
-              </div>
-              <div style={{ fontSize: '10px', color: '#444', marginTop: '10px' }}>
-                Lace Midnight Preview Wallet Required
-              </div>
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: '10px', color: '#00ff9d', marginBottom: '20px' }}>
-                WALLET_CONNECTED: {dustAddress?.dustAddress?.slice(0, 12)}...{dustAddress?.dustAddress?.slice(-6)}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', alignItems: 'center' }}>
+            {isWalletConnected ? (
+              <>
+                <div style={{ fontSize: '10px', color: '#00ff9d', marginBottom: '5px' }}>
+                  WALLET_CONNECTED: {dustAddress?.dustAddress?.slice(0, 12)}...{dustAddress?.dustAddress?.slice(-6)}
+                </div>
                 <button className="boot-btn" onClick={() => runTerminalBoot(true)}>
                   DEPLOY_CONTRACT (ON-CHAIN)
                 </button>
-                <button 
-                  className="boot-btn" 
-                  onClick={() => runTerminalBoot(false)}
-                  style={{ opacity: 0.7, fontSize: '10px' }}
-                >
-                  DEMO_MODE (LOCAL)
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'none' }}><MidnightWallet /></div>
+                <button className="boot-btn" onClick={() => setOpen(true)}>
+                  CONNECT_WALLET
                 </button>
-              </div>
-              <div style={{ fontSize: '9px', color: '#444', marginTop: '15px', maxWidth: '300px', textAlign: 'center' }}>
-                On-chain mode deploys a contract and records guesses to Preview network. Demo mode runs locally.
-              </div>
-            </>
-          )}
+                <div style={{ fontSize: '9px', color: '#444' }}>
+                  Connect wallet above to enable on-chain mode
+                </div>
+              </>
+            )}
+            <button
+              className="boot-btn"
+              onClick={() => runTerminalBoot(false)}
+              style={{ opacity: 0.7, fontSize: '10px' }}
+            >
+              DEMO_MODE (LOCAL)
+            </button>
+          </div>
+          <div style={{ fontSize: '9px', color: '#444', marginTop: '15px', maxWidth: '300px', textAlign: 'center' }}>
+            On-chain mode deploys a contract and records guesses to the Midnight network. Demo mode runs locally — no wallet required.
+          </div>
+          <div style={{ fontSize: '8px', color: '#1a3a2a', marginTop: '40px', letterSpacing: '4px' }}>
+            BUILT BY GEMOTHY
+          </div>
         </div>
       )}
 
@@ -687,11 +887,17 @@ export const ShadowCipher = () => {
 
       {/* Top Bar */}
       <div className="top-bar">
-        <div>SHADOWCIPHER_V1.1 // MIDNIGHT_PROTOCOL</div>
-        <div style={{ color: useOnChain ? '#00ff9d' : '#666' }}>
+        <div>SHADOWCIPHER_V1.1</div>
+        <div className="mode-info" style={{ color: useOnChain ? '#00ff9d' : '#666' }}>
           {useOnChain ? 'MODE: ON-CHAIN' : 'MODE: DEMO'} // {contractAddress ? `CONTRACT: ${contractAddress.slice(0, 8)}...` : 'NO CONTRACT'}
         </div>
-        <div style={{ color: '#666' }}>NETWORK: PREVIEW</div>
+        {demoFallback && (
+          <div style={{ color: '#ff4d4d', fontWeight: 'bold', fontSize: '10px' }}>
+            DEPLOY FAILED — DEMO MODE
+          </div>
+        )}
+        <div className="gem-sig" style={{ color: '#1a3a2a', fontSize: '9px' }}>GEM://</div>
+        <div style={{ color: '#666' }}>NET: {networkName}</div>
       </div>
 
       {/* Main Container */}
@@ -732,14 +938,18 @@ export const ShadowCipher = () => {
             <div className="panel">
               <div className="panel-title">ANONYMOUS_RANKINGS</div>
               <div>
-                <div className="leaderboard-entry">
-                  <span>USR_0x9F3...</span>
-                  <span>04 ATTEMPTS</span>
-                </div>
-                <div className="leaderboard-entry" style={{ color: '#444' }}>
-                  <span>USR_0x3A8...</span>
-                  <span>06 ATTEMPTS</span>
-                </div>
+                {leaderboard.length > 0 ? (
+                  leaderboard.map((entry, i) => (
+                    <div key={entry.address} className="leaderboard-entry" style={{ color: i === 0 ? '#00ff9d' : '#444' }}>
+                      <span>{entry.displayName || `USR_${entry.address.slice(0, 7)}...`}</span>
+                      <span>{String(entry.score).padStart(2, '0')} ATTEMPTS</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="leaderboard-entry" style={{ color: '#444' }}>
+                    <span>Loading rankings...</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -754,6 +964,67 @@ export const ShadowCipher = () => {
                 REBOOT
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Arcade Name Entry Overlay (Demo Mode game over) */}
+      {showNameEntry && !scoreSubmitted && (
+        <div className="help-overlay">
+          <div className="help-content" style={{ textAlign: 'center' }}>
+            <div className="help-title">
+              {guesses[guesses.length - 1]?.black === 4 ? '// CIPHER CRACKED //' : '// ACCESS REVOKED //'}
+            </div>
+            <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '20px' }}>
+              {guesses[guesses.length - 1]?.black === 4
+                ? `Solved in ${guesses.length} attempt${guesses.length !== 1 ? 's' : ''}!`
+                : 'Better luck next time.'}
+            </div>
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '15px', letterSpacing: '3px' }}>
+              ENTER YOUR INITIALS
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '25px' }}>
+              {arcadeName.map((char, i) => (
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                  <button
+                    className="btn"
+                    onClick={() => cycleNameChar(i, 1)}
+                    style={{ padding: '6px 12px', fontSize: '14px' }}
+                  >
+                    ▲
+                  </button>
+                  <div style={{
+                    fontSize: '36px',
+                    fontWeight: 'bold',
+                    color: nameSlot === i ? '#00ff9d' : '#4d79ff',
+                    textShadow: nameSlot === i ? '0 0 15px #00ff9d' : '0 0 10px #4d79ff',
+                    width: '40px',
+                    cursor: 'pointer',
+                  }}
+                    onClick={() => setNameSlot(i)}
+                  >
+                    {char}
+                  </div>
+                  <button
+                    className="btn"
+                    onClick={() => cycleNameChar(i, -1)}
+                    style={{ padding: '6px 12px', fontSize: '14px' }}
+                  >
+                    ▼
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button className="btn" onClick={handleNameSubmit} style={{ width: '100%' }}>
+              RECORD_SCORE
+            </button>
+            <button
+              className="btn"
+              onClick={() => { setShowNameEntry(false); setScoreSubmitted(true); }}
+              style={{ width: '100%', marginTop: '10px', opacity: 0.5, fontSize: '9px' }}
+            >
+              SKIP
+            </button>
           </div>
         </div>
       )}

@@ -28,7 +28,7 @@ export class PreviewConfig implements Config {
   logDir = path.resolve(currentDir, '..', 'logs', 'tui-preview', `${new Date().toISOString()}.log`);
   indexer = 'https://indexer.preview.midnight.network/api/v3/graphql';
   indexerWS = 'wss://indexer.preview.midnight.network/api/v3/graphql/ws';
-  node = 'wss://rpc.preview.midnight.network';
+  node = 'https://rpc.preview.midnight.network';
   proofServer = 'http://127.0.0.1:6300';
   networkId = 'preview';
 }

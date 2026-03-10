@@ -99,6 +99,18 @@ export class MidnightBrowserWallet {
     window.localStorage.removeItem("network-id");
   }
 
+  static findWalletAPI(rdns: string): InitialAPI | undefined {
+    if (!window.midnight) return undefined;
+    // First try direct key lookup (legacy behavior)
+    if (window.midnight[rdns]) return window.midnight[rdns];
+    // Search by name or rdns property (Lace registers under a UUID key)
+    for (const key of Object.keys(window.midnight)) {
+      const api = window.midnight[key];
+      if (api && (api.name === rdns || api.rdns === rdns)) return api;
+    }
+    return undefined;
+  }
+
   static async connectToWallet(
     rdns: string,
     networkID: string,
@@ -107,7 +119,7 @@ export class MidnightBrowserWallet {
     return firstValueFrom(
       fnPipe(
         interval(100),
-        map(() => window.midnight?.[rdns]),
+        map(() => MidnightBrowserWallet.findWalletAPI(rdns)),
         tap((initialAPI) => {
           logger?.info(initialAPI, "Check for wallet initial API");
         }),

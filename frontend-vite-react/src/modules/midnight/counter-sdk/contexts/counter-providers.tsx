@@ -1,16 +1,14 @@
-import * as ledger from "@midnight-ntwrk/ledger-v6";
 import {
   type MidnightProvider,
   type WalletProvider,
-  type BalancedProvingRecipe,
   PrivateStateProvider,
   ZKConfigProvider,
   ProofProvider,
   PublicDataProvider,
 } from "@midnight-ntwrk/midnight-js-types";
+import * as ledger from "@midnight-ntwrk/ledger";
 import { createContext, useCallback, useMemo, useState } from "react";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
-// import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
 import { Logger } from "pino";
 import type {
   CounterCircuits,
@@ -18,7 +16,6 @@ import type {
 } from "../api/common-types";
 import { CounterProviders } from "../api/common-types";
 import { useWallet } from "../../wallet-widget/hooks/useWallet";
-// import { WrappedPrivateStateProvider } from "../../wallet-widget/utils/providersWrappers/privateStateProvider";
 import {
   ActionMessages,
   ProviderAction,
@@ -33,14 +30,13 @@ import { inMemoryPrivateStateProvider } from "../../wallet-widget/utils/customIm
 import { CounterPrivateState } from "@eddalabs/counter-contract";
 import {
   fromHex,
-  ShieldedCoinInfo,
   toHex,
 } from "@midnight-ntwrk/compact-runtime";
 
 export interface ProvidersState {
   privateStateProvider: PrivateStateProvider<typeof CounterPrivateStateId>;
   zkConfigProvider?: ZKConfigProvider<CounterCircuits>;
-  proofProvider: ProofProvider<CounterCircuits>;
+  proofProvider: ProofProvider;
   publicDataProvider?: PublicDataProvider;
   walletProvider?: WalletProvider;
   midnightProvider?: MidnightProvider;
@@ -86,12 +82,6 @@ export const Provider = ({ children, logger }: ProviderProps) => {
     typeof CounterPrivateStateId
   > = useMemo(
     () =>
-      // new WrappedPrivateStateProvider(
-      //   levelPrivateStateProvider({
-      //     privateStateStoreName: "counter-private-state",
-      //   }),
-      //   logger
-      // ),
       inMemoryPrivateStateProvider<string, CounterPrivateState>(),
     [logger, status]
   );
@@ -113,7 +103,6 @@ export const Provider = ({ children, logger }: ProviderProps) => {
 
   const zkConfigProvider = useMemo(() => {
     if (typeof window === "undefined") {
-      // Return undefined (or an appropriate fallback) if running on the server.
       return undefined;
     }
     return new CachedFetchZkConfigProvider<CounterCircuits>(
@@ -125,53 +114,38 @@ export const Provider = ({ children, logger }: ProviderProps) => {
 
   const proofProvider = useMemo(
     () =>
-      serviceUriConfig?.proverServerUri
-        ? proofClient(serviceUriConfig.proverServerUri, providerCallback)
+      serviceUriConfig?.proverServerUri && zkConfigProvider
+        ? proofClient(serviceUriConfig.proverServerUri, zkConfigProvider, providerCallback)
         : noopProofClient(),
-    [serviceUriConfig, providerCallback, status]
+    [serviceUriConfig, zkConfigProvider, providerCallback, status]
   );
 
   const walletProvider: WalletProvider = useMemo(
     () =>
       connectedAPI
         ? {
-            getCoinPublicKey(): ledger.CoinPublicKey {
-              return shieldedAddresses?.shieldedCoinPublicKey as unknown as ledger.CoinPublicKey;
+            getCoinPublicKey() {
+              return shieldedAddresses?.shieldedCoinPublicKey as any;
             },
-            getEncryptionPublicKey(): ledger.EncPublicKey {
-              return shieldedAddresses?.shieldedEncryptionPublicKey as unknown as ledger.EncPublicKey;
+            getEncryptionPublicKey() {
+              return shieldedAddresses?.shieldedEncryptionPublicKey as any;
             },
             async balanceTx(
-              tx: ledger.UnprovenTransaction,
-              newCoins?: ShieldedCoinInfo[],
+              tx: any,
               ttl?: Date
-            ): Promise<BalancedProvingRecipe> {
+            ): Promise<ledger.FinalizedTransaction> {
               try {
-                logger.info(
-                  { tx, newCoins, ttl },
-                  "Balancing transaction via wallet"
-                );
+                logger.info("Balancing transaction via wallet");
                 const serializedTx = toHex(tx.serialize());
                 const received =
                   await connectedAPI.balanceUnsealedTransaction(serializedTx);
-                const transaction: ledger.Transaction<
-                  ledger.SignatureEnabled,
-                  ledger.PreProof,
-                  ledger.PreBinding
-                > = ledger.Transaction.deserialize<
-                  ledger.SignatureEnabled,
-                  ledger.PreProof,
-                  ledger.PreBinding
-                >(
+                const transaction = ledger.Transaction.deserialize(
                   "signature",
-                  "pre-proof",
-                  "pre-binding",
+                  "proof",
+                  "binding",
                   fromHex(received.tx)
                 );
-                return {
-                  type: "TransactionToProve",
-                  transaction: transaction,
-                };
+                return transaction as ledger.FinalizedTransaction;
               } catch (e) {
                 logger.error(
                   { error: e },
@@ -182,11 +156,11 @@ export const Provider = ({ children, logger }: ProviderProps) => {
             },
           }
         : {
-            getCoinPublicKey(): ledger.CoinPublicKey {
-              return "";
+            getCoinPublicKey() {
+              return "" as any;
             },
-            getEncryptionPublicKey(): ledger.EncPublicKey {
-              return "";
+            getEncryptionPublicKey() {
+              return "" as any;
             },
             balanceTx: () => Promise.reject(new Error("readonly")),
           },
@@ -200,9 +174,9 @@ export const Provider = ({ children, logger }: ProviderProps) => {
             submitTx: async (
               tx: ledger.FinalizedTransaction
             ): Promise<ledger.TransactionId> => {
-              await connectedAPI.submitTransaction(toHex(tx.serialize()));
-              const txIdentifiers = tx.identifiers();
-              const txId = txIdentifiers[0]; // Return the first transaction ID
+              await connectedAPI.submitTransaction(toHex((tx as any).serialize()));
+              const txIdentifiers = (tx as any).identifiers();
+              const txId = txIdentifiers[0];
               logger.info(
                 { txIdentifiers },
                 "Submitted transaction via wallet"
@@ -225,7 +199,6 @@ export const Provider = ({ children, logger }: ProviderProps) => {
       zkConfigProvider,
       walletProvider,
       midnightProvider,
-      // Only set the nested providers object if publicDataProvider (and others, if needed) are defined.
       providers:
         publicDataProvider && zkConfigProvider
           ? {

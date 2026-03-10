@@ -23,7 +23,7 @@ async function setupStandalone() {
     logger.info(`address keystore ${wallet.unshieldedKeystore.getAddress()}`);
     logger.info(result);
   } catch (error) {
-    logger.error('Setup failed:', error);
+    logger.error(error, 'Setup failed');
   }
   // Keep the process running forever
   logger.info('Setup complete. Keeping container alive forever...');

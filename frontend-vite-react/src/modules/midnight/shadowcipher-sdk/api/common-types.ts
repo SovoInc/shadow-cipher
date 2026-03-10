@@ -1,12 +1,11 @@
-import type { ImpureCircuitId, MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
+import type { MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
+import type { ImpureCircuitId } from '@midnight-ntwrk/compact-js';
 import type { DeployedContract, FoundContract } from '@midnight-ntwrk/midnight-js-contracts';
 
-// Types will be generated from compact contract - for now define interfaces
+// Matches the Compact contract ledger: commitment, attempts, solved
 export interface ShadowCipherLedger {
   readonly commitment: Uint8Array;
   readonly attempts: bigint;
-  readonly black_pegs: bigint;
-  readonly white_pegs: bigint;
   readonly solved: boolean;
 }
 
@@ -15,16 +14,11 @@ export type ShadowCipherPrivateState = {
   commitment: Uint8Array;
 };
 
+// Matches the Compact contract circuits: initialize, record_guess
 export interface ShadowCipherContract {
   circuits: {
     initialize: (context: unknown, commitment: Uint8Array) => unknown;
-    verify_guess: (
-      context: unknown,
-      guess_0: bigint,
-      guess_1: bigint,
-      guess_2: bigint,
-      guess_3: bigint
-    ) => unknown;
+    record_guess: (context: unknown, is_solved: boolean) => unknown;
   };
 }
 
@@ -67,8 +61,6 @@ export const emptyState: DerivedState = {
   ledger: {
     commitment: new Uint8Array(32),
     attempts: 0n,
-    black_pegs: 0n,
-    white_pegs: 0n,
     solved: false,
   },
   privateState: {

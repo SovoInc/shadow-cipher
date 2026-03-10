@@ -10,7 +10,8 @@ import path from 'path';
 import * as api from '../../api';
 import type { WalletContext } from '../../api';
 import * as Rx from 'rxjs';
-import * as ledger from '@midnight-ntwrk/ledger-v6';
+import * as ledger from '@midnight-ntwrk/ledger-v7';
+import { unshieldedToken } from '@midnight-ntwrk/ledger-v7';
 import type { Logger } from 'pino';
 
 const GENESIS_MINT_WALLET_SEED = '0000000000000000000000000000000000000000000000000000000000000001';
@@ -154,7 +155,7 @@ export class TestEnvironment {
   };
 
   static getProofServerContainer = async (env: string) =>
-    await new GenericContainer('midnightnetwork/proof-server:6.1.0-alpha.6')
+    await new GenericContainer('midnightntwrk/proof-server:7.0.0')
       .withExposedPorts(6300)
       .withCommand(['midnight-proof-server', '--network', env])
       .withEnvironment({ RUST_BACKTRACE: 'full' })
@@ -186,7 +187,7 @@ export class TestEnvironment {
     }
     
     const state = await Rx.firstValueFrom(this.walletContext.wallet.state());
-    const balance = state.unshielded?.balances[ledger.nativeToken().raw] ?? 0n;   
+    const balance = state.unshielded?.balances[unshieldedToken().raw] ?? 0n;
     return this.walletContext;
   };
 }

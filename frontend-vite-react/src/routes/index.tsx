@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { Home } from '@/pages/home';
+import { ShadowCipher } from '@/pages/shadowcipher';
 
 export const Route = createFileRoute('/')({
-  component: Home,
+  component: ShadowCipher,
 });

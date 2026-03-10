@@ -10,11 +10,14 @@ import {
   ShadowCipherProviders,
   UserAction,
 } from './common-types';
-import { ShadowCipher, witnesses } from '@meshsdk/shadowcipher-contract';
+import { ShadowCipher } from '@meshsdk/shadowcipher-contract';
 import { deployContract, findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
-import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import { CompiledContract } from '@midnight-ntwrk/compact-js';
 
-export const shadowCipherContractInstance = new ShadowCipher.Contract(witnesses);
+export const shadowCipherCompiledContract = CompiledContract.make('shadowcipher', ShadowCipher.Contract).pipe(
+  CompiledContract.withVacantWitnesses,
+  CompiledContract.withCompiledFileAssets('shadowcipher'),
+);
 
 // Helper functions for game logic (client-side)
 export const generateRandomSecret = (): [number, number, number, number] => {
@@ -26,16 +29,10 @@ export const generateRandomSecret = (): [number, number, number, number] => {
   ] as [number, number, number, number];
 };
 
-export const computeCommitment = (secret: [number, number, number, number]): Uint8Array => {
-  const buffer = new Uint8Array(32);
-  buffer[0] = secret[0];
-  buffer[1] = secret[1];
-  buffer[2] = secret[2];
-  buffer[3] = secret[3];
-  for (let i = 4; i < 32; i++) {
-    buffer[i] = (secret[i % 4] * 37 + i) % 256;
-  }
-  return buffer;
+export const computeCommitment = async (secret: [number, number, number, number]): Promise<Uint8Array> => {
+  const data = new Uint8Array([secret[0], secret[1], secret[2], secret[3]]);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return new Uint8Array(hashBuffer);
 };
 
 // Calculate pegs client-side for immediate feedback
@@ -104,9 +101,10 @@ export class ShadowCipherController implements ShadowCipherControllerInterface {
     >([]);
 
     // Initialize private state with random secret
+    // Note: commitment is set asynchronously after construction via initCommitment()
     const secret = generateRandomSecret();
-    const commitment = computeCommitment(secret);
-    this.currentPrivateState = { secret, commitment };
+    this.currentPrivateState = { secret, commitment: new Uint8Array(32) };
+    this.initCommitment(secret);
 
     this.state$ = Rx.combineLatest([
       providers.publicDataProvider
@@ -126,13 +124,19 @@ export class ShadowCipherController implements ShadowCipherControllerInterface {
       this.guessHistory$,
     ]).pipe(
       Rx.map(([ledger, privateState, userAction, guessHistory]) => ({
-        ledger: { ...ledger, black_pegs: 0n, white_pegs: 0n },
+        ledger,
         privateState,
         userAction,
         guessHistory,
       })),
       Rx.retry({ delay: 500 })
     );
+  }
+
+  private async initCommitment(secret: [number, number, number, number]) {
+    const commitment = await computeCommitment(secret);
+    this.currentPrivateState = { ...this.currentPrivateState, commitment };
+    this.privateStates$.next(this.currentPrivateState);
   }
 
   getSecret(): [number, number, number, number] {
@@ -145,7 +149,7 @@ export class ShadowCipherController implements ShadowCipherControllerInterface {
 
     try {
       const secret = generateRandomSecret();
-      const commitment = computeCommitment(secret);
+      const commitment = await computeCommitment(secret);
       this.currentPrivateState = { secret, commitment };
       this.privateStates$.next(this.currentPrivateState);
       this.guessHistory$.next([]);
@@ -193,17 +197,14 @@ export class ShadowCipherController implements ShadowCipherControllerInterface {
     logger.info('Deploying ShadowCipher contract');
 
     try {
-      // Set network ID for ledger API BEFORE creating any transactions
-      // Preview network uses 'preview' network ID
+      // Network ID is set by the caller (useShadowCipherContract hook) before deploy
       // setNetworkId() sets a global state that the ledger library uses when:
       // - Creating transactions via deployContract() -> createUnprovenDeployTx()
       // - The ledger reads this via @midnight-ntwrk/midnight-js-network-id
       // This MUST be set synchronously before deployContract() is called
-      setNetworkId('preview');
-      logger.info({ networkId: 'preview' }, 'Ledger API network ID set to preview');
       
       const secret = generateRandomSecret();
-      const commitment = computeCommitment(secret);
+      const commitment = await computeCommitment(secret);
       const initialPrivateState: ShadowCipherPrivateState = { secret, commitment };
 
       // deployContract() from @midnight-ntwrk/midnight-js-contracts will:
@@ -213,7 +214,7 @@ export class ShadowCipherController implements ShadowCipherControllerInterface {
       // 4. The balanced transaction is returned and then proven/submitted
       const deployedContract = await deployContract(providers, {
         privateStateId: contractPrivateStateId,
-        contract: shadowCipherContractInstance,
+        compiledContract: shadowCipherCompiledContract,
         initialPrivateState,
       });
 
@@ -255,12 +256,12 @@ export class ShadowCipherController implements ShadowCipherControllerInterface {
     logger.info({ contractAddress }, 'Joining ShadowCipher contract');
 
     const secret = generateRandomSecret();
-    const commitment = computeCommitment(secret);
+    const commitment = await computeCommitment(secret);
     const initialPrivateState: ShadowCipherPrivateState = { secret, commitment };
 
     const deployedContract = await findDeployedContract(providers, {
       contractAddress,
-      contract: shadowCipherContractInstance,
+      compiledContract: shadowCipherCompiledContract,
       privateStateId: contractPrivateStateId,
       initialPrivateState,
     });

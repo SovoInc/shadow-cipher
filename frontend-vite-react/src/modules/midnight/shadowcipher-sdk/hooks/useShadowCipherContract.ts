@@ -1,8 +1,7 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useWallet } from '../../wallet-widget/hooks/useWallet';
-import * as ledger from '@midnight-ntwrk/ledger-v6';
 import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
-import { fromHex, toHex } from '@midnight-ntwrk/compact-runtime';
+import { toHex, fromHex } from '@midnight-ntwrk/compact-runtime';
 import { CachedFetchZkConfigProvider } from '../../wallet-widget/utils/providersWrappers/zkConfigProvider';
 import { proofClient } from '../../wallet-widget/utils/providersWrappers/proofClient';
 import { inMemoryPrivateStateProvider } from '../../wallet-widget/utils/customImplementations/in-memory-private-state-provider';
@@ -10,6 +9,7 @@ import { ShadowCipherController } from '../api/contractController';
 import { ShadowCipherPrivateState, ShadowCipherPrivateStateId, ShadowCipherCircuits } from '../api/common-types';
 import { logger } from '@/routes/__root';
 import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import * as ledger from '@midnight-ntwrk/ledger-v7';
 
 export const useShadowCipherContract = () => {
   const { serviceUriConfig, shieldedAddresses, connectedAPI, status } = useWallet();
@@ -26,9 +26,6 @@ export const useShadowCipherContract = () => {
       return null;
     }
 
-    // Note: When using wallet extension, the wallet handles network ID
-    // We don't need to set it ourselves
-
     const privateStateProvider = inMemoryPrivateStateProvider<string, ShadowCipherPrivateState>();
 
     const publicDataProvider = indexerPublicDataProvider(
@@ -42,29 +39,35 @@ export const useShadowCipherContract = () => {
       () => {}
     );
 
-    // For preview network, use local proof server (http://127.0.0.1:6300) like the CLI does
-    // The wallet extension may provide a remote proof server, but for local development
-    // we should use the local Docker proof server
-    const networkId = status?.status === 'connected' ? status.networkId : null;
-    const proofServerUri = networkId === 'preview' 
-      ? 'http://127.0.0.1:6300'
-      : serviceUriConfig.proverServerUri;
-    
-    const proofProvider = proofClient(proofServerUri, () => {});
+    // Use env override, or fall back to local proof server if wallet's configured URI is unreachable.
+    // The Lace wallet may provide a preprod proof server URL that no longer resolves.
+    const proofServerUri = import.meta.env.VITE_PROOF_SERVER_URI || 'http://127.0.0.1:6300';
+    console.log('[ShadowCipher] Using proof server URI:', proofServerUri);
 
+    // New API: httpClientProofProvider requires zkConfigProvider as second arg
+    const proofProvider = proofClient(proofServerUri, zkConfigProvider, () => {
+      console.log('[ShadowCipher] Proof provider callback triggered');
+    });
+
+    // New WalletProvider interface:
+    // balanceTx takes an already-proven UnboundTransaction and returns FinalizedTransaction
+    // The DApp connector's balanceUnsealedTransaction handles balancing the proven tx
+    // Use ledger-v7 Transaction (browser-compatible WASM) for deserialization
     const walletProvider = {
       getCoinPublicKey: () => shieldedAddresses.shieldedCoinPublicKey as unknown as ledger.CoinPublicKey,
       getEncryptionPublicKey: () => shieldedAddresses.shieldedEncryptionPublicKey as unknown as ledger.EncPublicKey,
-      async balanceTx(tx: ledger.UnprovenTransaction) {
+      async balanceTx(tx: any, ttl?: Date) {
         const serializedTx = toHex(tx.serialize());
         const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
+        // Result from wallet is a fully balanced+finalized transaction
+        // Deserialize using ledger-v7 with finalized type markers
         const transaction = ledger.Transaction.deserialize(
           'signature',
-          'pre-proof',
-          'pre-binding',
+          'proof',
+          'binding',
           fromHex(received.tx)
         );
-        return { type: 'TransactionToProve' as const, transaction };
+        return transaction as any;
       },
     };
 
@@ -95,45 +98,46 @@ export const useShadowCipherContract = () => {
     setDeployError(null);
 
     try {
-      // Preview network uses 'preview' network ID
-      setNetworkId('preview');
-      
+      // Set network ID from wallet connection
+      const walletNetworkId = status?.status === 'connected' ? status.networkId : 'preview';
+      setNetworkId(walletNetworkId ?? 'preview');
+
       const newController = await ShadowCipherController.deploy(
         ShadowCipherPrivateStateId,
         providers as any,
         logger
       );
-      
+
       setController(newController);
       setContractAddress(newController.deployedContractAddress);
       setIsDeploying(false);
-      
+
       return newController;
     } catch (error) {
       console.error('Deploy error:', error);
-      // Log the full error including cause for FiberFailure
+
+      // Extract the deepest meaningful error message from FiberFailure chain
+      let errorMessage = 'Deployment failed';
       if (error && typeof error === 'object' && 'cause' in error) {
         const cause = (error as any).cause;
         console.error('Deploy error cause:', cause);
         logger?.error(cause || error, 'Deploy error details');
-        // Extract failure message from nested structure
         if (cause && typeof cause === 'object' && 'failure' in cause) {
           const failure = (cause as any).failure;
           if (failure && typeof failure === 'object' && 'message' in failure) {
             console.error('Actual error message:', failure.message);
-            const errorMessage = failure.message || 'Deployment failed';
-            setDeployError(errorMessage);
-            setIsDeploying(false);
-            return null;
+            errorMessage = failure.message || errorMessage;
           }
         }
       }
-      const errorMessage = error instanceof Error 
-        ? (error.cause ? String(error.cause) : error.message) || 'Deployment failed'
-        : 'Deployment failed';
+      if (errorMessage === 'Deployment failed' && error instanceof Error) {
+        errorMessage = error.message || errorMessage;
+      }
+
       setDeployError(errorMessage);
       setIsDeploying(false);
-      return null;
+      // Re-throw with the clean message so the caller gets it
+      throw new Error(errorMessage);
     }
   }, [providers]);
 
