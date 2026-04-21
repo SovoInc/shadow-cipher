@@ -3,7 +3,7 @@ module.exports = {
     name: 'shadow-cipher-sponsor',
     script: 'src/index.ts',
     interpreter: 'node',
-    interpreter_args: '--experimental-specifier-resolution=node --loader ts-node/esm',
+    interpreter_args: '--import tsx/esm',
     cwd: '/opt/shadow-cipher/server',
     env_file: '/opt/shadow-cipher/.env',
     restart_delay: 5000,

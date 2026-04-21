@@ -24,6 +24,7 @@
     "@types/node": "^22.15.29",
     "@types/ws": "^8.18.1",
     "ts-node": "^10.9.2",
+    "tsx": "^4.19.2",
     "@typescript-eslint/eslint-plugin": "^8.33.1",
     "@typescript-eslint/parser": "^8.33.1",
     "@vercel/node": "^5.6.11",
