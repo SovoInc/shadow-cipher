@@ -81,8 +81,11 @@ jobs:
           $SCP package.json package-lock.json turbo.json \
             "ec2-user@${EC2_HOST}:/opt/shadow-cipher/"
 
-          # Install prod deps in workspace, then (re)start PM2
-          $SSH 'cd /opt/shadow-cipher && npm ci --omit=dev && (pm2 reload shadow-cipher-sponsor --update-env || pm2 start server/ecosystem.config.cjs) && pm2 save'
+          # Install deps in workspace (ts-node is in devDependencies but we
+          # run TypeScript directly at runtime, so install with dev deps),
+          # then (re)start PM2. Use npm install (not ci) because deploy.yml
+          # strips package-lock.json earlier in the build step.
+          $SSH 'cd /opt/shadow-cipher && rm -f package-lock.json && npm install && (pm2 reload shadow-cipher-sponsor --update-env || pm2 start server/ecosystem.config.cjs) && pm2 save'
 
           # Ensure shared proof server is up (managed systemd unit, shared with guess-who)
           $SSH 'sudo systemctl is-active proof-server || sudo systemctl start proof-server'
