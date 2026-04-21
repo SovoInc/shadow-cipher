@@ -1,36 +1,74 @@
 {
-  "compiler-version": "0.29.0",
-  "language-version": "0.21.0",
-  "runtime-version": "0.14.0",
+  "compiler-version": "0.30.0",
+  "language-version": "0.22.0",
+  "runtime-version": "0.15.0",
   "circuits": [
     {
-      "name": "initialize",
+      "name": "create_game",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+      ],
+      "result-type": {
+        "type-name": "Uint",
+        "maxval": 18446744073709551615
+      }
+    },
+    {
+      "name": "submit_guess",
       "pure": false,
       "proof": true,
       "arguments": [
         {
-          "name": "new_commitment",
+          "name": "game_id",
           "type": {
-            "type-name": "Bytes",
-            "length": 32
+            "type-name": "Uint",
+            "maxval": 18446744073709551615
+          }
+        },
+        {
+          "name": "g0",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 255
+          }
+        },
+        {
+          "name": "g1",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 255
+          }
+        },
+        {
+          "name": "g2",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 255
+          }
+        },
+        {
+          "name": "g3",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 255
           }
         }
       ],
       "result-type": {
-        "type-name": "Tuple",
-        "types": [
-        ]
+        "type-name": "Boolean"
       }
     },
     {
-      "name": "record_guess",
+      "name": "delete_game",
       "pure": false,
       "proof": true,
       "arguments": [
         {
-          "name": "is_solved",
+          "name": "game_id",
           "type": {
-            "type-name": "Boolean"
+            "type-name": "Uint",
+            "maxval": 18446744073709551615
           }
         }
       ],
@@ -42,6 +80,28 @@
     }
   ],
   "witnesses": [
+    {
+      "name": "secret_code",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Vector",
+        "length": 4,
+        "type": {
+          "type-name": "Uint",
+          "maxval": 255
+        }
+      }
+    },
+    {
+      "name": "salt",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Bytes",
+        "length": 32
+      }
+    }
   ],
   "contracts": [
   ]

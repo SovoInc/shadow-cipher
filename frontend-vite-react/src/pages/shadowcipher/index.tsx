@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { calculatePegs, generateRandomSecret } from '@/modules/midnight/shadowcipher-sdk/api/contractController';
 import { useWallet } from '@/modules/midnight/wallet-widget/hooks/useWallet';
 import { MidnightWallet } from '@/modules/midnight/wallet-widget/ui/midnightWallet';
-import { useShadowCipherContract } from '@/modules/midnight/shadowcipher-sdk/hooks/useShadowCipherContract';
+import { startGame, submitGuess as sponsorSubmitGuess, declareAnswer, type GuessResponse } from '@/lib/sponsorApi';
 
 const COLORS = ['#FF4D4D', '#4D79FF', '#FFCF4D', '#4DFF88', '#D94DFF', '#FF8C4D'];
 const COLOR_NAMES = ['RED', 'BLUE', 'YELLOW', 'GREEN', 'PURPLE', 'ORANGE'];
@@ -27,9 +26,9 @@ export const ShadowCipher = () => {
   const networkName = status?.status === 'connected' ? (status.networkId ?? 'unknown').toUpperCase() : 'OFFLINE';
   const isWalletConnected = status?.status === 'connected';
 
-  const { controller, contractAddress, isDeploying, deployError, deployContract } = useShadowCipherContract();
-  const [useOnChain, setUseOnChain] = useState(false); // Toggle for on-chain vs demo mode
-  const [demoFallback, setDemoFallback] = useState(false); // True when on-chain failed and fell back to demo
+  const [sessionIdServer, setSessionIdServer] = useState<string | null>(null);
+  const [useOnChain, setUseOnChain] = useState(false);
+  const [demoFallback, setDemoFallback] = useState(false);
 
   const [isBooted, setIsBooted] = useState(false);
   const [isTerminalBooting, setIsTerminalBooting] = useState(false);
@@ -68,90 +67,63 @@ export const ShadowCipher = () => {
     setBootLines(prev => [...prev, '']);
   };
 
-  const DEPLOY_TIMEOUT_MS = 180_000; // 3 minute timeout for deployment
-
   const runTerminalBoot = async (onChain: boolean = false) => {
     setIsTerminalBooting(true);
     setBootLines(['']);
     setUseOnChain(onChain);
     setDemoFallback(false);
 
-    // Pre-check DUST balance for on-chain mode — hard block
-    if (onChain && (!dustBalance || dustBalance.balance === 0n)) {
-      setBootLines([
-        '[ERR] DUST balance is 0. Cannot deploy contract.',
-        '',
-        'Generate DUST in Lace wallet, then try again.',
-        'Falling back to demo mode...',
-        '',
-      ]);
-      addLog('Blocked: 0 DUST — generate DUST in Lace wallet first', 'info');
-      onChain = false;
-      setUseOnChain(false);
-      setDemoFallback(true);
-      await sleep(2000);
-    }
-
     const net = networkName.toLowerCase();
     const commands = [
-      { t: `midnight-connect --node ${net} --proof-server local`, delay: 400 },
-      { t: onChain ? `shadowcipher deploy --network ${net}` : 'shadowcipher start --mode demo', delay: 600 },
+      { t: `midnight-connect --node ${net} --proof-server sponsor`, delay: 400 },
+      { t: onChain ? `shadowcipher join --network ${net}` : 'shadowcipher start --mode demo', delay: 600 },
     ];
 
     for (const cmd of commands) {
       await typeCommand(cmd.t);
       await sleep(cmd.delay);
-      const status = cmd.t.includes('connect')
+      const cmdStatus = cmd.t.includes('connect')
         ? '[OK] Handshake verified. ZK-Relay Active.'
         : '[OK] Decryption matrix online.';
-      setBootLines(prev => [...prev, status, '']);
+      setBootLines(prev => [...prev, cmdStatus, '']);
       addLog(`> ${cmd.t}`, 'cmd');
     }
 
+    // Start game via sponsor server
+    try {
+      setBootLines(prev => [...prev, onChain ? 'Claiming pre-committed game from pool...' : 'Starting demo session...', '']);
+      addLog(onChain ? 'Requesting on-chain game from sponsor server...' : 'Starting demo session...', 'info');
 
-    // If on-chain mode, deploy the contract
-    if (onChain) {
-      setBootLines(prev => [...prev, `Deploying contract to ${networkName} network...`, '', 'ZK proof generation may take 1–3 minutes...', '']);
-      addLog('Deploying smart contract (this may take a few minutes)...', 'proof');
+      const game = await startGame(!onChain);
+      setSessionIdServer(game.sessionId);
 
-      try {
-        // Race deployment against a timeout
-        const deployedController = await Promise.race([
-          deployContract(),
-          new Promise<null>((_, reject) =>
-            setTimeout(() => reject(new Error('Deploy timed out after 3 minutes')), DEPLOY_TIMEOUT_MS)
-          ),
-        ]);
-
-        if (deployedController) {
-          setBootLines(prev => [...prev, `[OK] Contract deployed: ${deployedController.deployedContractAddress.slice(0, 16)}...`, '']);
-          addLog(`Contract deployed: ${deployedController.deployedContractAddress}`, 'info');
-
-          // Use secret from controller
-          const newSecret = deployedController.getSecret();
-          setSecret(newSecret);
-        } else {
-          setBootLines(prev => [...prev, '[ERR] Deployment failed. Falling back to demo mode.', '']);
-          addLog(`Deployment failed${deployError ? ': ' + deployError : ''}, using demo mode`, 'info');
-          const newSecret = generateRandomSecret();
-          setSecret(newSecret);
+      if (game.contractAddress && game.gameId) {
+        setBootLines(prev => [...prev, `[OK] Game claimed: id=${game.gameId}, contract=${game.contractAddress.slice(0, 16)}...`, '']);
+        addLog(`On-chain game ready: game_id=${game.gameId}`, 'info');
+      } else {
+        if (onChain) {
+          setBootLines(prev => [...prev, '[WARN] No on-chain game available. Using demo mode.', '']);
+          addLog('Pool empty or sponsor unavailable, falling back to demo', 'info');
           setUseOnChain(false);
           setDemoFallback(true);
         }
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        setBootLines(prev => [...prev, `[ERR] ${errMsg}`, '', 'Falling back to demo mode.', '']);
-        addLog(`Deploy error: ${errMsg}`, 'info');
-        const newSecret = generateRandomSecret();
-        setSecret(newSecret);
-        setUseOnChain(false);
-        setDemoFallback(true);
+        addLog('Game initialized. Secret held by server.', 'info');
       }
-    } else {
-      // Demo mode - just generate local secret
-      const newSecret = generateRandomSecret();
-      setSecret(newSecret);
-      addLog('Game initialized (demo mode). Secret stored locally.', 'info');
+      // Secret is always held server-side
+      setSecret([0, 0, 0, 0]);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setBootLines(prev => [...prev, `[ERR] ${errMsg}`, '', 'Starting local demo...', '']);
+      addLog(`Server error: ${errMsg}, using local demo`, 'info');
+      setUseOnChain(false);
+      setDemoFallback(true);
+      setSessionIdServer(null);
+      setSecret([
+        Math.floor(Math.random() * 6),
+        Math.floor(Math.random() * 6),
+        Math.floor(Math.random() * 6),
+        Math.floor(Math.random() * 6),
+      ]);
     }
 
     await sleep(600);
@@ -190,42 +162,74 @@ export const ShadowCipher = () => {
     }
   }, [gameOver, isProving, isBooted]);
 
-  const submitGuess = async () => {
+  const handleSubmitGuess = async () => {
     if (guesses.length >= 10 || gameOver || isProving) return;
-    
+
     setIsProving(true);
     setCircuitLabel('GENERATING_SNARK_WITNESS...');
     addLog(`Compiling Guess #${guesses.length + 1} into circuit...`, 'proof');
 
     try {
-      if (useOnChain && controller) {
-        // On-chain mode: submit to contract
-        addLog('Generating ZK proof for on-chain verification...', 'proof');
+      if (sessionIdServer) {
+        // Server-backed mode: get peg feedback from sponsor server
+        const isLastAttempt = guesses.length + 1 >= 10;
+
+        addLog('Submitting guess to server...', 'proof');
         setProgress(25);
-        
-        const result = await controller.submitGuess(currentGuess);
+
+        const result = await sponsorSubmitGuess(sessionIdServer, currentGuess);
         setProgress(75);
-        
+
         const newGuess: Guess = { code: [...currentGuess] as [number, number, number, number], black: result.black, white: result.white };
         setGuesses(prev => [...prev, newGuess]);
-        
-        addLog(`TX submitted. Result: ${result.black}✓ / ${result.white}~`, 'info');
-        setProgress(100);
 
-        if (result.black === 4) {
+        if (result.solved) {
+          addLog(`Result: ${result.black}✓ / ${result.white}~`, 'info');
+          setProgress(100);
+
+          // Final declaration — triggers on-chain ZK proof if available
+          addLog('CIPHER DECRYPTED! Submitting ZK proof on-chain...', 'proof');
+          try {
+            const walletAddr = dustAddress?.dustAddress?.slice(0, 16);
+            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+            const declaration = await declareAnswer(sessionIdServer, currentGuess, walletAddr, walletName);
+            if (declaration.onChain) {
+              addLog(`On-chain TX: ${declaration.onChain.txId}`, 'info');
+            }
+          } catch (declareErr) {
+            addLog(`On-chain declare failed: ${declareErr}`, 'info');
+          }
+
           setGameOver(true);
-          addLog('CIPHER DECRYPTED! Win recorded on-chain.', 'info');
-          // On-chain mode: auto-submit with wallet address
-          const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
-          submitScore(walletName);
-        } else if (guesses.length + 1 >= 10) {
+          if (useOnChain) {
+            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+            submitScore(walletName);
+          } else {
+            setShowNameEntry(true);
+          }
+        } else if (isLastAttempt) {
+          addLog(`Result: ${result.black}✓ / ${result.white}~`, 'info');
+          // Declare final answer even on loss to record the score
+          try {
+            const walletAddr = dustAddress?.dustAddress?.slice(0, 16);
+            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'ANO';
+            await declareAnswer(sessionIdServer, currentGuess, walletAddr, walletName);
+          } catch { /* ignore */ }
+
           setGameOver(true);
           addLog('ACCESS_REVOKED. Maximum attempts reached.', 'info');
-          const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
-          submitScore(walletName);
+          if (useOnChain) {
+            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+            submitScore(walletName);
+          } else {
+            setShowNameEntry(true);
+          }
+        } else {
+          addLog(`Proof Verified. Result: ${result.black}✓ / ${result.white}~`, 'info');
         }
+        setProgress(100);
       } else {
-        // Demo mode: local verification
+        // Pure local fallback (no server): local peg calculation
         const steps = ['Hashing input...', 'Applying constraints...', 'Satisfying R1CS...', 'Extracting Proof...'];
         for (let i = 0; i < steps.length; i++) {
           addLog(steps[i], 'proof');
@@ -233,26 +237,35 @@ export const ShadowCipher = () => {
           setProgress((i + 1) * 25);
         }
 
-        const result = calculatePegs(currentGuess, secret);
-        const newGuess: Guess = { code: [...currentGuess] as [number, number, number, number], black: result.black, white: result.white };
-        setGuesses(prev => [...prev, newGuess]);
-        
-        addLog(`Proof Verified. Result: ${result.black}✓ / ${result.white}~`, 'info');
+        // Local peg calculation
+        let black = 0, white = 0;
+        const secretCopy = [...secret];
+        const guessCopy = [...currentGuess];
+        for (let i = 0; i < 4; i++) {
+          if (guessCopy[i] === secretCopy[i]) { black++; secretCopy[i] = -1; guessCopy[i] = -2; }
+        }
+        for (let i = 0; i < 4; i++) {
+          if (guessCopy[i] >= 0) { const idx = secretCopy.indexOf(guessCopy[i]); if (idx !== -1) { white++; secretCopy[idx] = -1; } }
+        }
 
-        if (result.black === 4) {
+        const newGuess: Guess = { code: [...currentGuess] as [number, number, number, number], black, white };
+        setGuesses(prev => [...prev, newGuess]);
+        addLog(`Proof Verified. Result: ${black}✓ / ${white}~`, 'info');
+
+        if (black === 4) {
           setGameOver(true);
           addLog('CIPHER DECRYPTED. BROADCASTING WIN...', 'info');
-          setShowNameEntry(true); // Show arcade name entry
+          setShowNameEntry(true);
         } else if (guesses.length + 1 >= 10) {
           setGameOver(true);
           addLog('ACCESS_REVOKED. Maximum attempts reached.', 'info');
-          setShowNameEntry(true); // Show arcade name entry even on loss
+          setShowNameEntry(true);
         }
       }
     } catch (e) {
       addLog(`Error: ${e}`, 'info');
     }
-    
+
     setCircuitLabel('SYSTEM_IDLE');
     setProgress(0);
     setIsProving(false);
@@ -840,7 +853,7 @@ export const ShadowCipher = () => {
                   WALLET_CONNECTED: {dustAddress?.dustAddress?.slice(0, 12)}...{dustAddress?.dustAddress?.slice(-6)}
                 </div>
                 <button className="boot-btn" onClick={() => runTerminalBoot(true)}>
-                  DEPLOY_CONTRACT (ON-CHAIN)
+                  PLAY (ON-CHAIN)
                 </button>
               </>
             ) : (
@@ -954,7 +967,7 @@ export const ShadowCipher = () => {
             </div>
 
             <div className="controls">
-              <button className="btn" onClick={submitGuess} disabled={isProving || gameOver}>
+              <button className="btn" onClick={handleSubmitGuess} disabled={isProving || gameOver}>
                 SUBMIT
               </button>
               <button className="btn" onClick={() => setShowHelp(true)}>

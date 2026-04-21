@@ -46,7 +46,8 @@ export default defineConfig(({ mode }) => ({
       },
     },
     exclude: [
-      "@midnight-ntwrk/onchain-runtime"
+      "@midnight-ntwrk/onchain-runtime",
+      "@midnight-ntwrk/onchain-runtime-v3"
     ],
   },
   build: {
@@ -68,7 +69,7 @@ export default defineConfig(({ mode }) => ({
     },
     proxy: {
       '/api': {
-        target: 'https://midnight-shadow-cipher.vercel.app',
+        target: 'http://localhost:3003',
         changeOrigin: true,
       },
     },

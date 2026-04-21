@@ -2,21 +2,100 @@ pragma language_version >= 0.21;
 
 import CompactStandardLibrary;
 
-// Public ledger state for the game
-export ledger commitment: Bytes<32>;
-export ledger attempts: Counter;
-export ledger solved: Boolean;
+// --- Structs ---
 
-// Initialize a new game with a commitment hash
-// @disclose: new_commitment
-export circuit initialize(new_commitment: Bytes<32>): [] {
-  commitment = disclose(new_commitment);
-  solved = false;
+struct GameSecret {
+  c0: Uint<8>;
+  c1: Uint<8>;
+  c2: Uint<8>;
+  c3: Uint<8>;
+  salt: Bytes<32>;
 }
 
-// Record a guess and increment attempts
-// @disclose: is_solved  
-export circuit record_guess(is_solved: Boolean): [] {
-  attempts.increment(1);
-  solved = disclose(is_solved);
+struct Game {
+  commitment: Bytes<32>;
+  active: Boolean;
+}
+
+// --- Ledger state ---
+
+export ledger next_game_id: Counter;
+export ledger games: Map<Uint<64>, Game>;
+
+// --- Witnesses (per-game private state) ---
+
+witness secret_code(): Vector<4, Uint<8>>;
+witness salt(): Bytes<32>;
+
+// --- Circuits ---
+
+// Create a new game. The commitment is computed inside the circuit from
+// the private witnesses so it always matches what submit_guess will verify.
+// Returns the game_id so the caller can reference this game later.
+export circuit create_game(): Uint<64> {
+  const game_id = next_game_id.read();
+  next_game_id.increment(1);
+
+  const code = secret_code();
+  const s    = salt();
+  const commitment: Bytes<32> = persistentHash<GameSecret>(GameSecret {
+    c0: code[0], c1: code[1], c2: code[2], c3: code[3], salt: s
+  });
+
+  games.insert(game_id, Game {
+    commitment: disclose(commitment),
+    active: true
+  });
+
+  return disclose(game_id);
+}
+
+// Submit the final guess for a game.
+// The ZK proof verifies:
+//   1. hash(secret_code, salt) == stored commitment for this game_id
+//   2. secret_code == [g0, g1, g2, g3]
+// Returns true if correct, false otherwise. Marks game inactive on correct guess.
+export circuit submit_guess(game_id: Uint<64>, g0: Uint<8>, g1: Uint<8>, g2: Uint<8>, g3: Uint<8>): Boolean {
+  const pub_game_id = disclose(game_id);
+  const game = games.lookup(pub_game_id);
+  assert(game.active, "Game is not active");
+
+  const code = secret_code();
+  const s    = salt();
+
+  const computed: Bytes<32> = persistentHash<GameSecret>(GameSecret {
+    c0: code[0], c1: code[1], c2: code[2], c3: code[3], salt: s
+  });
+  assert(computed == game.commitment, "Commitment mismatch");
+
+  const is_correct = disclose((code[0] == g0) && (code[1] == g1) && (code[2] == g2) && (code[3] == g3));
+
+  if (is_correct) {
+    games.insert(pub_game_id, Game {
+      commitment: game.commitment,
+      active: false
+    });
+  }
+
+  return is_correct;
+}
+
+// Remove a completed game from the ledger to reclaim storage.
+// The ZK proof verifies the caller knows the original secret_code + salt
+// (i.e. only the game creator / sponsor server can prune it).
+// Only inactive games can be deleted.
+export circuit delete_game(game_id: Uint<64>): [] {
+  const pub_game_id = disclose(game_id);
+  const game = games.lookup(pub_game_id);
+  assert(!game.active, "Game must be inactive before deletion");
+
+  const code = secret_code();
+  const s    = salt();
+
+  const computed: Bytes<32> = persistentHash<GameSecret>(GameSecret {
+    c0: code[0], c1: code[1], c2: code[2], c3: code[3], salt: s
+  });
+  assert(computed == game.commitment, "Commitment mismatch");
+
+  games.remove(pub_game_id);
 }

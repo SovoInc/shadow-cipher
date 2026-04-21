@@ -39,6 +39,21 @@ jspm_packages/
 
 # dotenv environment variables file
 .env
+**/.env
+!.env.example
+
+# SQLite DB (created at runtime on the box)
+data.db
+data.db-journal
+data.db-wal
+data.db-shm
+
+# Sponsor wallet cache (contains sensitive wallet state)
+wallet-cache/
+**/wallet-cache/
+
+# Frontend-copied contract artifacts (regenerated during build from shadowcipher-contract/src/managed)
+frontend-vite-react/public/midnight/shadowcipher/
 
 # MacOS
 .DS_Store

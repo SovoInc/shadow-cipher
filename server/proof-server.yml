@@ -1,0 +1,11 @@
+# Optional: shadow-cipher normally shares guess-who's proof-server on :6300.
+# If you need a dedicated instance, run this with `docker compose -f proof-server.yml up -d`
+# and point PROOF_SERVER_URL at the mapped port.
+services:
+  proof-server:
+    image: 'midnightntwrk/proof-server:8.0.3'
+    command: ['midnight-proof-server -v']
+    ports:
+      - '6300:6300'
+    environment:
+      RUST_BACKTRACE: 'full'

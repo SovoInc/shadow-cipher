@@ -1,38 +1,33 @@
+// ShadowCipher private state — holds the secret 4-color code and per-game salt
 export type ShadowCipherPrivateState = {
-  secret: [number, number, number, number]; // 4 color values (0-5)
-  commitment: Uint8Array; // 32 bytes
+  code: [number, number, number, number]; // 4 color values (0-5)
+  salt: Uint8Array; // 32 random bytes, generated fresh per game
 };
 
-export const createPrivateState = (
-  secret: [number, number, number, number],
-  commitment: Uint8Array
-): ShadowCipherPrivateState => {
-  return { secret, commitment };
+export const shadowCipherWitnesses = {
+  secret_code: ({
+    privateState,
+  }: {
+    privateState: ShadowCipherPrivateState;
+  }): [ShadowCipherPrivateState, bigint[]] => {
+    return [
+      privateState,
+      [
+        BigInt(privateState.code[0]),
+        BigInt(privateState.code[1]),
+        BigInt(privateState.code[2]),
+        BigInt(privateState.code[3]),
+      ],
+    ];
+  },
+  salt: ({
+    privateState,
+  }: {
+    privateState: ShadowCipherPrivateState;
+  }): [ShadowCipherPrivateState, Uint8Array] => {
+    return [privateState, privateState.salt];
+  },
 };
 
-export const generateRandomSecret = (): [number, number, number, number] => {
-  return [
-    Math.floor(Math.random() * 6),
-    Math.floor(Math.random() * 6),
-    Math.floor(Math.random() * 6),
-    Math.floor(Math.random() * 6),
-  ];
-};
-
-// Compute commitment hash from secret (simplified)
-export const computeCommitment = (
-  secret: [number, number, number, number]
-): Uint8Array => {
-  const buffer = new Uint8Array(32);
-  buffer[0] = secret[0];
-  buffer[1] = secret[1];
-  buffer[2] = secret[2];
-  buffer[3] = secret[3];
-  for (let i = 4; i < 32; i++) {
-    buffer[i] = (secret[i % 4] * 37 + i) % 256;
-  }
-  return buffer;
-};
-
-// No witnesses needed for this simple contract
-export const witnesses = {};
+// No vacant witnesses — this contract requires secret_code and salt
+export const witnesses = shadowCipherWitnesses;

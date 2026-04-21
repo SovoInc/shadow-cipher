@@ -4,7 +4,6 @@ import {
   Configuration,
   ConnectionStatus,
 } from "@midnight-ntwrk/dapp-connector-api";
-import { pipe as fnPipe } from "fp-ts/lib/function.js";
 import { type Logger } from "pino";
 import {
   catchError,
@@ -117,8 +116,7 @@ export class MidnightBrowserWallet {
     logger?: Logger
   ): Promise<MidnightBrowserWallet> {
     return firstValueFrom(
-      fnPipe(
-        interval(100),
+      interval(100).pipe(
         map(() => MidnightBrowserWallet.findWalletAPI(rdns)),
         tap((initialAPI) => {
           logger?.info(initialAPI, "Check for wallet initial API");
