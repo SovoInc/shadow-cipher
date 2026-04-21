@@ -90,5 +90,9 @@ jobs:
           # Ensure shared proof server is up (managed systemd unit, shared with guess-who)
           $SSH 'sudo systemctl is-active proof-server || sudo systemctl start proof-server'
 
-          # Health check
-          $SSH 'sleep 8 && pm2 status shadow-cipher-sponsor && curl -fsS http://localhost:3003/api/status || (pm2 logs shadow-cipher-sponsor --lines 60 --nostream; exit 1)'
+          # Health check: pm2 must show the process online. We don't curl
+          # /api/status here because the sponsor wallet SDK syncs dust on
+          # startup, which can take several minutes before :3003 is bound.
+          # Use `pm2 logs shadow-cipher-sponsor` after the deploy to watch
+          # sync progress.
+          $SSH 'sleep 5 && pm2 status shadow-cipher-sponsor | grep -E "online|launched" && pm2 logs shadow-cipher-sponsor --lines 15 --nostream || (pm2 logs shadow-cipher-sponsor --lines 60 --nostream; exit 1)'
