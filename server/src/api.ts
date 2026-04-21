@@ -26,7 +26,7 @@ import * as Rx from 'rxjs';
 import { WebSocket } from 'ws';
 import { Buffer } from 'buffer';
 import { mnemonicToSeed, validateMnemonic } from '@scure/bip39';
-import { wordlist as english } from '@scure/bip39/wordlists/english';
+import { wordlist as english } from '@scure/bip39/wordlists/english.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { type Config, contractConfig, currentDir } from './config.js';
