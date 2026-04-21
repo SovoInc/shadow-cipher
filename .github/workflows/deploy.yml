@@ -17,7 +17,13 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # Delete package-lock.json to avoid the npm optional-deps bug
+        # (package-lock was generated on darwin-arm64, so the Linux rollup
+        # native addon @rollup/rollup-linux-x64-gnu is missing from it).
+        # https://github.com/npm/cli/issues/4828
+        run: |
+          rm -f package-lock.json
+          npm install
 
       - name: Build contract + frontend
         env:
