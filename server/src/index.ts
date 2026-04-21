@@ -1,4 +1,9 @@
-import 'dotenv/config';
+// Load .env from the app root (one level above server/), not the server cwd,
+// so the single /opt/shadow-cipher/.env is the source of truth.
+import { config as loadDotenv } from 'dotenv';
+import path from 'node:path';
+loadDotenv({ path: path.resolve(process.cwd(), '..', '.env') });
+loadDotenv(); // also try cwd/.env as a fallback for local dev
 import pino from 'pino';
 import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import { getConfig } from './config.js';

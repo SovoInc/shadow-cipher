@@ -26,7 +26,10 @@ import * as Rx from 'rxjs';
 import { WebSocket } from 'ws';
 import { Buffer } from 'buffer';
 import { mnemonicToSeed, validateMnemonic } from '@scure/bip39';
-import { wordlist as english } from '@scure/bip39/wordlists/english.js';
+// tsx rewrites .js → .ts for static imports, which breaks @scure/bip39's
+// exports map (it only exports './wordlists/english.js'). Use a dynamic
+// import so tsx leaves the specifier alone.
+const english = (await import('@scure/bip39/wordlists/english.js' as string)).wordlist;
 import fs from 'node:fs';
 import path from 'node:path';
 import { type Config, contractConfig, currentDir } from './config.js';
