@@ -31,9 +31,9 @@ export class PreprodConfig implements Config {
 }
 
 export class MainnetConfig implements Config {
-  indexer = 'https://indexer.midnight.network/api/v3/graphql';
-  indexerWS = 'wss://indexer.midnight.network/api/v3/graphql/ws';
-  node = 'https://rpc.midnight.network';
+  indexer = 'https://indexer.mainnet.midnight.network/api/v4/graphql';
+  indexerWS = 'wss://indexer.mainnet.midnight.network/api/v4/graphql/ws';
+  node = 'https://rpc.mainnet.midnight.network';
   proofServer = process.env.PROOF_SERVER_URL ?? 'http://127.0.0.1:6300';
   networkId = 'mainnet';
 }

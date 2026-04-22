@@ -3,7 +3,7 @@
 # and point PROOF_SERVER_URL at the mapped port.
 services:
   proof-server:
-    image: 'midnightntwrk/proof-server:8.0.3'
+    image: 'midnightntwrk/proof-server:latest'
     command: ['midnight-proof-server -v']
     ports:
       - '6300:6300'

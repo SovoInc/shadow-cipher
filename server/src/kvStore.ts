@@ -3,7 +3,7 @@
 // The module name stays "kvStore" so existing imports keep working.
 
 import Database from 'better-sqlite3';
-import { randomUUID, randomBytes } from 'crypto';
+import { randomUUID, randomBytes, randomInt } from 'crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -281,12 +281,7 @@ export async function recordScore(
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 export function generateRandomCode(): [number, number, number, number] {
-  return [
-    Math.floor(Math.random() * 6),
-    Math.floor(Math.random() * 6),
-    Math.floor(Math.random() * 6),
-    Math.floor(Math.random() * 6),
-  ];
+  return [randomInt(0, 6), randomInt(0, 6), randomInt(0, 6), randomInt(0, 6)];
 }
 
 export function generateRandomSalt(): string {
