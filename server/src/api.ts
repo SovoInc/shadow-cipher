@@ -116,9 +116,24 @@ export const createOnChainGame = async (
   contractAddress: string,
   privateState: ShadowCipherPrivateState,
 ): Promise<{ gameId: bigint }> => {
-  logger.info('Creating on-chain game...');
-  const contract = await joinShadowCipher(providers, contractAddress, privateState);
-  const finalizedTxData = await contract.callTx.create_game();
+  const t0 = Date.now();
+  logger.info('create_game: start');
+  let contract: any;
+  try {
+    contract = await joinShadowCipher(providers, contractAddress, privateState);
+    logger.info(`create_game: joined contract (${Date.now() - t0}ms)`);
+  } catch (err) {
+    logger.error({ err: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }, 'create_game: joinShadowCipher FAILED');
+    throw err;
+  }
+  let finalizedTxData: any;
+  try {
+    finalizedTxData = await contract.callTx.create_game();
+    logger.info(`create_game: tx finalized (${Date.now() - t0}ms total)`);
+  } catch (err) {
+    logger.error({ err: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }, 'create_game: callTx.create_game FAILED');
+    throw err;
+  }
   const gameId = finalizedTxData.private.result as bigint;
   logger.info(`On-chain game created with game_id: ${gameId}`);
   return { gameId };
