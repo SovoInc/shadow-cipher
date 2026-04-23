@@ -902,7 +902,7 @@ export const ShadowCipher = () => {
       <div className="top-bar">
         <div>SHADOWCIPHER_V1.1</div>
         <div className="mode-info" style={{ color: useOnChain ? '#00ff9d' : '#666' }}>
-          {useOnChain ? 'MODE: ON-CHAIN' : 'MODE: DEMO'} // {contractAddress ? `CONTRACT: ${contractAddress.slice(0, 8)}...` : 'NO CONTRACT'}
+          {useOnChain ? 'MODE: ON-CHAIN' : 'MODE: DEMO'} // {import.meta.env.VITE_CONTRACT_ADDRESS ? `CONTRACT: ${String(import.meta.env.VITE_CONTRACT_ADDRESS).slice(0, 8)}...` : 'NO CONTRACT'}
         </div>
         {demoFallback && (
           <div style={{ color: '#ff4d4d', fontWeight: 'bold', fontSize: '10px' }}>
