@@ -2,7 +2,9 @@
 // The sponsor server handles on-chain game creation, guess submission,
 // and DUST sponsorship — the frontend never touches the wallet SDK directly.
 
-const SPONSOR_URL = import.meta.env.VITE_SPONSOR_URL || 'http://localhost:3002';
+// When blank, browser uses relative paths (same-origin, nginx reverse-proxies to server).
+// In dev Vite's proxy (see vite.config.ts) forwards /api to localhost:3003.
+const SPONSOR_URL = (import.meta.env.VITE_SPONSOR_URL as string | undefined) ?? '';
 
 export interface StartGameResponse {
   sessionId: string;

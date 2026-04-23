@@ -22,7 +22,8 @@ export const ShadowCipher = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
   
-  const { status, setOpen, dustAddress, dustBalance } = useWallet();
+  const { status, setOpen, shieldedAddresses } = useWallet();
+  const displayAddress = shieldedAddresses?.shieldedAddress;
   const networkName = status?.status === 'connected' ? (status.networkId ?? 'unknown').toUpperCase() : 'OFFLINE';
   const isWalletConnected = status?.status === 'connected';
 
@@ -190,8 +191,8 @@ export const ShadowCipher = () => {
           // Final declaration — triggers on-chain ZK proof if available
           addLog('CIPHER DECRYPTED! Submitting ZK proof on-chain...', 'proof');
           try {
-            const walletAddr = dustAddress?.dustAddress?.slice(0, 16);
-            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+            const walletAddr = displayAddress?.slice(0, 16);
+            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'MID';
             const declaration = await declareAnswer(sessionIdServer, currentGuess, walletAddr, walletName);
             if (declaration.onChain) {
               addLog(`On-chain TX: ${declaration.onChain.txId}`, 'info');
@@ -202,7 +203,7 @@ export const ShadowCipher = () => {
 
           setGameOver(true);
           if (useOnChain) {
-            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'MID';
             submitScore(walletName);
           } else {
             setShowNameEntry(true);
@@ -211,15 +212,15 @@ export const ShadowCipher = () => {
           addLog(`Result: ${result.black}✓ / ${result.white}~`, 'info');
           // Declare final answer even on loss to record the score
           try {
-            const walletAddr = dustAddress?.dustAddress?.slice(0, 16);
-            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'ANO';
+            const walletAddr = displayAddress?.slice(0, 16);
+            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'ANO';
             await declareAnswer(sessionIdServer, currentGuess, walletAddr, walletName);
           } catch { /* ignore */ }
 
           setGameOver(true);
           addLog('ACCESS_REVOKED. Maximum attempts reached.', 'info');
           if (useOnChain) {
-            const walletName = dustAddress?.dustAddress?.slice(0, 3).toUpperCase() || 'MID';
+            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'MID';
             submitScore(walletName);
           } else {
             setShowNameEntry(true);
@@ -274,8 +275,8 @@ export const ShadowCipher = () => {
   const submitScore = async (name: string) => {
     const won = guesses.length > 0 && guesses[guesses.length - 1].black === 4;
     const attempts = guesses.length;
-    const address = useOnChain && dustAddress?.dustAddress
-      ? dustAddress.dustAddress.slice(0, 16)
+    const address = useOnChain && displayAddress
+      ? displayAddress.slice(0, 16)
       : `DMO_${name}`;
 
     try {
@@ -850,7 +851,7 @@ export const ShadowCipher = () => {
             {isWalletConnected ? (
               <>
                 <div style={{ fontSize: '10px', color: '#00ff9d', marginBottom: '5px' }}>
-                  WALLET_CONNECTED: {dustAddress?.dustAddress?.slice(0, 12)}...{dustAddress?.dustAddress?.slice(-6)}
+                  WALLET_CONNECTED: {displayAddress?.slice(0, 12)}...{displayAddress?.slice(-6)}
                 </div>
                 <button className="boot-btn" onClick={() => runTerminalBoot(true)}>
                   PLAY (ON-CHAIN)
