@@ -8,8 +8,5 @@ export const walletsListFormat: {
   };
 
 export enum networkID {
-  UNDEPLOYED = "undeployed",
-  PREVIEW = "preview", 
-  PREPROD = "preprod",
   MAINNET = "mainnet"
 }

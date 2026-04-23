@@ -7,30 +7,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./common/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "./common/dropdown-menu";
-import { ChevronDown, Network } from "lucide-react";
+import { Network } from "lucide-react";
 import { networkID } from "./common/common-values";
 import ConnectedButton from "./connected-button";
 import ScreenMain from "./screen-main";
 import { useWallet } from "../hooks/useWallet";
-import { Dispatch, SetStateAction, useEffect, useState } from "react";
-import { MidnightBrowserWallet } from "../api/walletController";
 
 export const MidnightWallet = () => {
   const { open, setOpen, status } = useWallet();
-  const [selectedNetwork, setSelectedNetwork] = useState(networkID.PREVIEW);
-
-  useEffect(() => {
-    const networkID =
-      MidnightBrowserWallet.getMidnightWalletConnected().networkID;
-    if (networkID === null) return;
-    setSelectedNetwork(networkID as SetStateAction<networkID>);
-  }, []);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -50,28 +34,15 @@ export const MidnightWallet = () => {
         className="sm:max-w-[425px] justify-center items-center border-2 border-white dark:border-gray-800"
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <Header
-          selectedNetwork={selectedNetwork}
-          setSelectedNetwork={setSelectedNetwork}
-        />
-        <ScreenMain setOpen={setOpen} selectedNetwork={selectedNetwork} />
+        <Header />
+        <ScreenMain setOpen={setOpen} selectedNetwork={networkID.MAINNET} />
         <Footer />
       </DialogContent>
     </Dialog>
   );
 };
 
-function Header({
-  selectedNetwork,
-  setSelectedNetwork,
-}: {
-  selectedNetwork: string;
-  setSelectedNetwork: Dispatch<SetStateAction<networkID>>;
-}) {
-  const getInitials = (network: string) => {
-    if (network === "preprod") return "PROD";
-    return network.substring(0, 4).toUpperCase();
-  };
+function Header() {
   return (
     <DialogHeader className="pb-4 space-y-3">
       <DialogTitle className="text-lg font-semibold text-center">
@@ -79,30 +50,10 @@ function Header({
       </DialogTitle>
 
       <div className="flex justify-center">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 px-3 text-xs font-medium"
-            >
-              <Network className="h-3 w-3 mr-1" />
-              {getInitials(selectedNetwork)}
-              <ChevronDown className="h-3 w-3 ml-1" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="center" className="min-w-[140px]">
-            {Object.values(networkID).map((network) => (
-              <DropdownMenuItem
-                key={network}
-                onClick={() => setSelectedNetwork(network)}
-                className={selectedNetwork === network ? "bg-accent" : ""}
-              >
-                {network}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <div className="inline-flex items-center h-8 px-3 text-xs font-medium rounded-md border border-input bg-background">
+          <Network className="h-3 w-3 mr-1" />
+          MAINNET
+        </div>
       </div>
     </DialogHeader>
   );
