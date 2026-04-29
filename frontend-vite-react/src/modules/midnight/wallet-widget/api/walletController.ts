@@ -5,18 +5,6 @@ import {
   ConnectionStatus,
 } from "@midnight-ntwrk/dapp-connector-api";
 import { type Logger } from "pino";
-import {
-  catchError,
-  concatMap,
-  filter,
-  firstValueFrom,
-  interval,
-  map,
-  take,
-  tap,
-  throwError,
-  timeout,
-} from "rxjs";
 
 import {
   DustAddress,
@@ -60,14 +48,14 @@ export class MidnightBrowserWallet {
       try {
         const _wallet = window.midnight[key];
         if (_wallet === undefined) continue;
-        if (_wallet.name === undefined) continue;
-        if (_wallet.apiVersion === undefined) continue;
+        if (typeof _wallet.connect !== "function") continue;
+        const name = _wallet.name ?? key;
         wallets.push({
-          name: _wallet.name,
-          apiVersion: _wallet.apiVersion,
+          name,
+          apiVersion: _wallet.apiVersion ?? "0.0.0",
           connect: _wallet.connect,
           icon: _wallet.icon,
-          rdns: _wallet.rdns,
+          rdns: _wallet.rdns ?? key,
         });
       } catch (e) {
         console.log(e);
@@ -115,88 +103,59 @@ export class MidnightBrowserWallet {
     networkID: string,
     logger?: Logger
   ): Promise<MidnightBrowserWallet> {
-    return firstValueFrom(
-      interval(100).pipe(
-        map(() => MidnightBrowserWallet.findWalletAPI(rdns)),
-        tap((initialAPI) => {
-          logger?.info(initialAPI, "Check for wallet initial API");
-        }),
-        filter((initialAPI): initialAPI is InitialAPI => !!initialAPI),
-        tap((initialAPI) => {
-          logger?.info(
-            initialAPI,
-            "Compatible wallet initial API found. Connecting."
-          );
-        }),
-        take(1),
-        timeout({
-          first: 1_000,
-          with: () =>
-            throwError(() => {
-              logger?.error("Could not find wallet initial API");
+    const initialAPI = MidnightBrowserWallet.findWalletAPI(rdns);
+    if (!initialAPI) {
+      logger?.error("Could not find wallet initial API");
+      throw new Error("Could not find wallet initial API");
+    }
 
-              return new Error("Could not find wallet initial API");
-            }),
-        }),
-        concatMap(async (initialAPI) => {          
-          return {
-            connectedAPI: await initialAPI.connect(networkID),
-            initialAPI,
-          };
-        }),
-        catchError((error, apis) =>
-          error
-            ? throwError(() => {
-                logger?.error("Unable to enable connector API");
-                return new Error("Application is not authorized");
-              })
-            : apis
-        ),
-        concatMap(async ({ connectedAPI, initialAPI }) => {
-          if (!connectedAPI) {
-            throw new Error("Connected API is undefined");
-          }
-          const serviceUriConfig = await connectedAPI.getConfiguration();
-          const status = await connectedAPI.getConnectionStatus();
-          const dustAddress = await connectedAPI.getDustAddress();
-          const dustBalance = await connectedAPI.getDustBalance();
-          const shieldedAddresses = await connectedAPI.getShieldedAddresses();
-          const shieldedBalances = await connectedAPI.getShieldedBalances();
-          const unshieldedAddress = await connectedAPI.getUnshieldedAddress();
-          const unshieldedBalances = await connectedAPI.getUnshieldedBalances();
-          const proofServerOnline = await checkProofServerStatus(
-            serviceUriConfig.proverServerUri
-          );
+    logger?.info(initialAPI, "Compatible wallet initial API found. Connecting.");
 
-          logger?.info("Connected to wallet");
+    let connectedAPI: ConnectedAPI;
+    try {
+      connectedAPI = await initialAPI.connect(networkID);
+    } catch (err) {
+      logger?.error(err, "Unable to enable connector API");
+      throw new Error("Application is not authorized");
+    }
+    if (!connectedAPI) throw new Error("Connected API is undefined");
 
-          const wallet = new MidnightBrowserWallet(
-            initialAPI,
-            connectedAPI,
-            serviceUriConfig,
-            status,
-            dustAddress,
-            dustBalance,
-            shieldedAddresses,
-            shieldedBalances,
-            unshieldedAddress,
-            unshieldedBalances,
-            proofServerOnline,
-            logger
-          );
-
-          // Call the static method
-          const networkID = status.status === "connected" ? status.networkId : null;
-          if (networkID === null) {
-            throw new Error("Network ID is null");
-          }
-          MidnightBrowserWallet.setMidnightWalletConnected(rdns, networkID, logger);
-          setNetworkId(networkID);
-
-          return wallet;
-        })
-      )
+    const serviceUriConfig = await connectedAPI.getConfiguration();
+    const status = await connectedAPI.getConnectionStatus();
+    const dustAddress = await connectedAPI.getDustAddress();
+    const dustBalance = await connectedAPI.getDustBalance();
+    const shieldedAddresses = await connectedAPI.getShieldedAddresses();
+    const shieldedBalances = await connectedAPI.getShieldedBalances();
+    const unshieldedAddress = await connectedAPI.getUnshieldedAddress();
+    const unshieldedBalances = await connectedAPI.getUnshieldedBalances();
+    const proofServerOnline = await checkProofServerStatus(
+      serviceUriConfig.proverServerUri
     );
+
+    logger?.info("Connected to wallet");
+
+    const wallet = new MidnightBrowserWallet(
+      initialAPI,
+      connectedAPI,
+      serviceUriConfig,
+      status,
+      dustAddress,
+      dustBalance,
+      shieldedAddresses,
+      shieldedBalances,
+      unshieldedAddress,
+      unshieldedBalances,
+      proofServerOnline,
+      logger
+    );
+
+    const connectedNetworkID =
+      status.status === "connected" ? status.networkId : null;
+    if (connectedNetworkID === null) throw new Error("Network ID is null");
+    MidnightBrowserWallet.setMidnightWalletConnected(rdns, connectedNetworkID, logger);
+    setNetworkId(connectedNetworkID);
+
+    return wallet;
   }
 
   disconnect(logger?: Logger): void {
