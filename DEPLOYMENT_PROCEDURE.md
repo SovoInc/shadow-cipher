@@ -153,6 +153,65 @@ pm2 restart shadow-cipher-sponsor --update-env
 
 Do not restart again while the resync is running — it starts over from 0%.
 
+### Bring the two wallets up one at a time
+
+The box cannot sync both sponsor wallets at once. Each syncing wallet holds ~1.5 GB of
+the t3.medium's 3.8 GB, and with both running there is no headroom: one app's sync
+repeatedly drops its RPC connection and restarts from 0% while the other progresses.
+
+The two apps use **different** wallet seeds, so the sync cannot be shared — each wallet
+scans the chain for its own UTXOs and dust. (The `proof-server` on port 6300 *is* shared
+by both, which is the expensive common component.)
+
+**After any restart of both apps — which every deploy does — sequence them:**
+
+```bash
+pm2 stop shadow-cipher-sponsor              # or proof-of-spy, whichever can wait
+free -m                                     # expect ~1.8 GB available
+
+# wait for the running one to finish and bind its port
+pm2 logs proof-of-spy --lines 20 --nostream --out | grep "Syncing dust"
+curl -s localhost:3003/api/status            # shadow-cipher, once it is the live one
+
+pm2 start shadow-cipher-sponsor              # only after the first is serving
+```
+
+### Reading sync progress correctly
+
+Note the log filenames do **not** match the PM2 app names: the app is
+`shadow-cipher-sponsor` but its logs are `~/.pm2/logs/shadow-cipher-{out,error}.log`
+(the sibling app's are `proof-of-spy-{out,error}.log`, which does match). Resolve it with
+a glob rather than guessing: `ls ~/.pm2/logs/*shadow*`.
+
+**`pm2 logs ... | tail` lies about the percentage.** The progress line is written with
+carriage returns rather than newlines, so the log tail shows a stale value that can
+appear frozen for many minutes while the sync is advancing normally. Split on CR:
+
+```bash
+tail -c 4000 ~/.pm2/logs/shadow-cipher-out.log | tr '\r' '\n' \
+  | grep -oE 'Syncing dust: [0-9]+% \([0-9]+/[0-9]+\)' | tail -1
+```
+
+Cross-check that the process is actually working — a wallet mid-sync sits well above
+100% CPU:
+
+```bash
+ps -o pid,pcpu,etimes,rss -p $(pgrep -f shadow-cipher | head -1)
+```
+
+A full mainnet sync is slow, so allow plenty of time before concluding something is
+wrong. A percentage climbing (`8% → 9% → 10%`) is healthy. A percentage that genuinely
+resets to `0% (<n>/0)` and stays there points at a stale cache; one that merely looks
+stuck in `pm2 logs` almost certainly is not.
+
+**A healthy wallet cache makes restarts cheap.** Once a wallet finishes syncing it writes
+its state to `server/wallet-cache/mainnet-<hash>.json` (roughly 500 KB when synced, versus
+~8 KB for a fresh one). A later restart restores from that file instead of rescanning the
+chain, so a routine deploy does *not* incur another full sync — only a cold start after
+the cache has been deleted or invalidated does. This is why the cache should only be
+cleared when it is genuinely corrupt (see the dust-tree error above), never as a
+speculative fix.
+
 ### The instance is unreachable over SSH
 
 Check the AWS status first; a failed *reachability* check is an AWS-side fault, not a

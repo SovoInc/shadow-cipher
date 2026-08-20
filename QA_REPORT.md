@@ -23,11 +23,11 @@ The core design is solid: **the server is authoritative for game logic.** Peg fe
 | Contract design (commit/reveal) | Sound |
 | Server-authoritative game logic | Good |
 | Leaderboard integrity | Fixed — single server-side write path |
-| Automated tests | 40 tests covering the core game rule, the scoring path, API compatibility, and the leaderboard repair |
+| Automated tests | 50 tests covering the core game rule, the scoring path, API compatibility, the leaderboard repair, and the contract surface |
 | CI quality gate | Tests and typecheck gate the deploy |
 | Root documentation | Rewritten to match the shipped app |
 
-**Recommendation:** the leaderboard and documentation blockers are resolved, the game logic is in good shape, and a regression in either the peg calculation or the scoring path now fails CI before it can deploy. The contract circuits remain unverified by tests (they need a simulator harness), and the leaderboard's historical rows still carry the pre-fix inflation described in Issue 1 — that data cleanup is the one action outstanding before the leaderboard can be presented as accurate.
+**Recommendation:** the leaderboard and documentation blockers are resolved, the game logic is in good shape, and a regression in either the peg calculation or the scoring path now fails CI before it can deploy. The pre-fix leaderboard rows were cleared rather than adjusted (Issue 1), so the table now records only correctly-counted play. The main gap remaining is executing the contract circuits against a ledger, which needs a proof server — the circuit surface and its witnesses are covered, the ZK logic itself is not. Operationally, note that the two sponsor wallets on the shared host must be started one at a time.
 
 ---
 
@@ -35,7 +35,7 @@ The core design is solid: **the server is authoritative for game logic.** Peg fe
 
 The repository previously contained **no tests of any kind** — a search across all three workspaces for `*.test.*`, `*.spec.*`, `test/`, `tests/`, and `__tests__/` returned nothing, the declared `test` scripts pointed at no files, and the root `package.json` had no `test` script at all, so `npm test` failed outright.
 
-**A unit-test suite now covers the highest-risk paths — 40 tests, all passing (`npm test`):**
+**A unit-test suite now covers the highest-risk paths — 50 tests, all passing (`npm test`):**
 
 | Suite | Covers |
 |---|---|
@@ -49,11 +49,13 @@ The suite runs against a throwaway SQLite database (`setup.ts` redirects `SQLITE
 
 Both suites were verified to fail on the defects they guard: reintroducing the double-increment fails the accumulation test, and breaking duplicate-colour handling fails the peg tests.
 
+| `server/src/__tests__/circuits.test.ts` | The contract surface, loaded from the committed build so no Compact compiler is needed: that exactly the three shipped circuits exist and are callable in both impure and provable form, that the contract refuses to construct without witnesses, and that the witnesses feeding the commitment return all four code positions across the 0-5 domain, a 32-byte salt byte-for-byte, and never mutate the private state — a witness that did would desynchronise the commitment from what `submit_guess` later proves against. |
+
 **Still uncovered:**
 
 | Target | Why it matters |
 |---|---|
-| Contract circuits via a simulator | `create_game` / `submit_guess` / `delete_game` remain entirely unverified |
+| Executing the circuits against a ledger | The circuit *surface* and its witnesses are now covered, but actually running `create_game` → `submit_guess` and asserting the commitment check accepts a right guess and rejects a wrong one needs a proof server (or a local simulator harness), so the ZK logic itself is still unverified end to end |
 | `/api/guess` attempt-cap enforcement | Server-side rule; needs an HTTP-level or extracted-handler test |
 | The `/api/declare` handler end to end | The scoring inputs are tested; the handler wiring around them is not |
 
@@ -103,7 +105,23 @@ Note that `games.sovo.com` resolves to CloudFront, so the site answering HTTPS `
 
 Two follow-on problems surfaced during recovery, both now handled:
 
-- **Stale wallet caches.** After the outage both apps failed to replay dust events (`values inserted non-linearly into dust generation tree; expected to insert index 12848, but received 12839`) and hung at `Syncing dust: 0% (141125/0)`, so the port never bound. The mainnet caches were backed up to `/home/ec2-user/wallet-cache-backup-*` and cleared, and the apps restarted into a clean resync. Preprod caches were left untouched.
+- **Stale wallet caches.** After the outage both apps failed to replay dust events (`values inserted non-linearly into dust generation tree; expected to insert index 12848, but received 12839`) and hung at `Syncing dust: 0% (141125/0)`, so the port never bound. The mainnet caches were backed up to `/home/ec2-user/wallet-cache-backup-*` and cleared, and the apps restarted into a clean resync. Preprod caches were left untouched, and the dust-tree error has not recurred.
+
+- **Memory is tight when both wallets sync at once — bring them up one at a time.** With both apps running, the two Node processes held ~1.5 GB each of the t3.medium's 3.8 GB, leaving ~460 MB free and no swap, with frequent `disconnected from wss://rpc.mainnet.midnight.network/` entries. Stopping one app frees ~1.4 GB and lets the other sync unimpeded.
+
+  The two apps use **different sponsor wallets**, so the sync cannot be shared: each wallet must scan the chain for its own UTXOs and dust. (They do already share the `proof-server` on port 6300, which is the expensive shared component.) Pooling both games onto one seed would make them contend for the same DUST coin and halve throughput — see Issue 13 on the single-coin serialisation limit.
+
+  This applies to **any deploy that restarts both apps together**, since a cold start requires a full mainnet resync. The operational procedure is to bring the wallets up sequentially — stop one, let the other finish syncing and bind its port, then start the second. The runbook in `DEPLOYMENT_PROCEDURE.md` documents the steps.
+
+- **Sync progress is easy to misread, which cost time during this recovery.** The progress line is written with carriage returns rather than newlines, so `pm2 logs ... | tail` shows a *stale* percentage that can look frozen for many minutes while the sync is advancing normally. Read it by splitting on CR, and cross-check CPU:
+
+  ```bash
+  tail -c 4000 ~/.pm2/logs/shadow-cipher-sponsor-out.log | tr '\r' '\n' \
+    | grep -oE 'Syncing dust: [0-9]+%' | tail -1
+  ps -o pid,pcpu,rss -p $(pgrep -f shadow-cipher | head -1)   # >100% CPU means it is working
+  ```
+
+  A percentage that genuinely resets to `0% (<n>/0)` and stays there indicates a stale cache; a percentage that merely appears stuck usually does not.
 - **`SQLITE_PATH` was never in effect.** `kvStore.ts` opens the database while being imported, and ES imports hoist above `index.ts`'s `loadDotenv()` call, so the variable was unset at that moment and the cwd fallback won. The deploy wrote `/opt/shadow-cipher/data.db` while the live database sat at `/opt/shadow-cipher/server/data.db`. `kvStore.ts` now loads `.env` itself before resolving the path.
 
 One precaution has already been taken, because it is the real risk here: the 20 GB gp3 root volume (`vol-01ca8f98b7bf06c19`) **had no snapshots at all and is flagged delete-on-termination**, while holding the live SQLite leaderboard (`/opt/shadow-cipher/data.db`) and the sponsor wallet cache. A full snapshot now exists — `snap-0e32c606a5cd054d0`, tagged `mf-games-pre-recovery`, 20 GB, **completed** — so that data is recoverable even if the instance never returns. The stop/start is safe to attempt against that backup.
@@ -320,6 +338,6 @@ Remaining, in recommended order:
 3. Replace the fabricated proof-progress vocabulary with honest status text (Issue 5).
 4. Set `MIDNIGHT_NETWORK` explicitly in CI and fail loudly rather than defaulting to preprod on a mainnet app (Issue 9).
 5. Restore lockfile-based installs so production builds are reproducible (`deploy.yml` deletes `package-lock.json`).
-6. Add a contract-simulator test suite for the three circuits — the largest remaining coverage gap.
+6. Extend the circuit tests to execute `create_game` → `submit_guess` against a ledger, asserting the commitment check accepts a correct guess and rejects an incorrect one. The circuit surface and witnesses are now covered (`circuits.test.ts`); running the proofs needs a proof server in the test environment, and is the largest remaining coverage gap.
 7. Wire up `delete_game` or drop it from the shipped circuits (Issue 8).
 8. Restore the real assertion in the proof-server health check (Issue 12).
