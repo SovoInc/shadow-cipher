@@ -26,9 +26,36 @@ export function buildLeaderboardRouter(): Router {
     res.json({ name: APP_NAME, description: APP_DESCRIPTION, achievements: liveAchievements, channels });
   });
 
-  // NOTE: there is deliberately no POST /api/metrics/scores. Scores are
-  // recorded exclusively server-side by POST /api/declare (sponsor-server.ts);
-  // the name-entry overlay uses POST /api/session/name, which only renames.
+  // POST /api/metrics/scores — compatibility endpoint for external callers.
+  //
+  // Scores are recorded server-side by POST /api/declare from the server's own
+  // evaluation of the guess. This endpoint no longer writes the submitted
+  // figures: accepting them is what let anyone curl a perfect score onto the
+  // leaderboard, and what double-counted every game (declare recorded it, then
+  // this did too). The path and the response shape are preserved so existing
+  // callers keep working, and it is safe to call any number of times.
+  router.post('/metrics/scores', async (req: Request, res: Response) => {
+    const { address } = req.body || {};
+    if (!address || typeof address !== 'string') {
+      return res.status(400).json({ error: 'address is required' });
+    }
+
+    const player = (await getPlayers()).find((p) => p.address === address);
+    if (!player) {
+      return res.status(404).json({ error: 'No recorded game for this address' });
+    }
+
+    res.json({
+      recorded: true,
+      player: {
+        address: player.address,
+        displayName: player.displayName,
+        bestScore: player.bestScore,
+        gamesPlayed: player.gamesPlayed,
+        gamesWon: player.gamesWon,
+      },
+    });
+  });
 
   // GET /api/metrics/users/:address — identity + per-channel stats for a wallet
   router.get('/metrics/users/:address', async (req: Request, res: Response) => {
@@ -78,8 +105,8 @@ export function buildLeaderboardRouter(): Router {
   });
 
   // GET /api/metrics/:channel — ranked entries for a channel (leaderboard, transactions)
-  // Registered AFTER /metrics/users/:address so that more specific path wins;
-  // Express matches in declaration order.
+  // Registered AFTER /metrics/users/:address and /metrics/scores so those
+  // static/specific paths win; Express matches in declaration order.
   router.get('/metrics/:channel', async (req: Request, res: Response) => {
     const channelId = String(req.params.channel ?? '');
     if (!channelId) return res.status(400).json({ error: 'Missing channel parameter' });

@@ -197,7 +197,8 @@ Secret codes and salts are generated with Node's CSPRNG (`crypto.randomInt`,
 | `GET /api/status` | Proof server / node / indexer / pool / contract health. |
 | `GET /api/pool` | `{ size, target }`. |
 | `GET /api/dust` | DUST balance details. |
-| `POST /api/metrics/scores` | Record a game result. |
+| `POST /api/session/name` | Attach a display name to a finished session's leaderboard row (rename only). |
+| `POST /api/metrics/scores` | Compatibility endpoint — returns the player's recorded figures. Does **not** write submitted results; `/api/declare` is the only path that records a score. |
 | `GET /api/metrics/leaderboard` | Top players. |
 | `GET /api/achievements/public/list` | Achievements + completion %. |
 

@@ -13,7 +13,9 @@
     "build": "turbo run build",
     "build-production": "cd shadowcipher-contract && npm run build && cd ../frontend-vite-react && npm run build",
     "dev:frontend": "cd frontend-vite-react && npm run dev",
-    "lint": "turbo run lint"
+    "lint": "turbo run lint",
+    "test": "npm run test --workspace=server",
+    "typecheck": "npm run typecheck --workspace=server && npm run typecheck --workspace=shadowcipher-contract"
   },
   "engines": {
     "node": ">=18"

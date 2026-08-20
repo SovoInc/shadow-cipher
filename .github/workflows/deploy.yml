@@ -6,7 +6,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Quality gate — deploy only runs if this passes, so a failing test or a new
+  # type error stops the release instead of reaching production.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          rm -f package-lock.json
+          npm install
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Typecheck (server + contract)
+        run: npm run typecheck
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +94,7 @@ jobs:
           # Server source (ts, no compile — ts-node/esm runs it)
           rsync -az --delete -e "$RSYNC_SSH" \
             --exclude='node_modules' --exclude='logs' --exclude='wallet-cache' --exclude='dist' \
+            --exclude='__tests__' --exclude='vitest.config.ts' \
             server/ "ec2-user@${EC2_HOST}:/opt/shadow-cipher/server/"
 
           # Contract package (runtime needs src/managed for ZK keys + package.json for workspace resolution)

@@ -7,7 +7,8 @@
 > **Status:** the High-severity leaderboard defects (Issues 1 and 2), the pool-stalling
 > session leak (Issue 3), the stale ZK keys (Issue 7), and the misleading root
 > documentation (Issue 6) have been resolved. Each is marked **Resolved** below with the
-> fix applied. Remaining open issues are Medium and Low.
+> fix applied. A unit-test suite and a CI quality gate have also been added, closing the
+> zero-coverage finding in §2. Remaining open issues are Medium and Low.
 
 ---
 
@@ -17,52 +18,47 @@ Shadow Cipher is a Mastermind variant on Midnight: crack a 4-position, 6-colour 
 
 The core design is solid: **the server is authoritative for game logic.** Peg feedback is computed server-side from the stored code (`sponsor-server.ts:206`), the secret never reaches the browser, and the attempt cap is enforced on the server. Code generation uses `crypto.randomInt`, not `Math.random`.
 
-Against that, **the repository contains no tests of any kind** — the single largest remaining gap.
-
 | Area | Status |
 |---|---|
 | Contract design (commit/reveal) | Sound |
 | Server-authoritative game logic | Good |
 | Leaderboard integrity | Fixed — single server-side write path |
-| Automated tests | **None — zero test files repo-wide** |
-| CI quality gate | **None** — deploys unverified |
+| Automated tests | 28 tests covering the core game rule, the scoring path, and API compatibility |
+| CI quality gate | Tests and typecheck gate the deploy |
 | Root documentation | Rewritten to match the shipped app |
 
-**Recommendation:** the leaderboard and documentation blockers are resolved and the game logic is in good shape. The remaining risk is process rather than product: there is still no test suite and no CI quality gate, so nothing prevents a regression from reaching production. Adding tests for `calculatePegs` and `recordScore` plus a typecheck gate before deploy is the highest-value next step.
+**Recommendation:** the leaderboard and documentation blockers are resolved, the game logic is in good shape, and a regression in either the peg calculation or the scoring path now fails CI before it can deploy. The contract circuits remain unverified by tests (they need a simulator harness), and the leaderboard's historical rows still carry the pre-fix inflation described in Issue 1 — that data cleanup is the one action outstanding before the leaderboard can be presented as accurate.
 
 ---
 
 ## 2. Test coverage
 
-**Zero. There are no test files anywhere in the repository.**
+The repository previously contained **no tests of any kind** — a search across all three workspaces for `*.test.*`, `*.spec.*`, `test/`, `tests/`, and `__tests__/` returned nothing, the declared `test` scripts pointed at no files, and the root `package.json` had no `test` script at all, so `npm test` failed outright.
 
-A search across all three workspaces for `*.test.*`, `*.spec.*`, `test/`, `tests/`, `__tests__/`, `vitest.config.*`, and `jest.config.*` returned nothing. Nothing asserts anything, so there is nothing to quote.
+**A unit-test suite now covers the highest-risk paths — 28 tests, all passing (`npm test`):**
 
-Test infrastructure is declared but non-functional:
-
-| Location | Declared | Reality |
-|---|---|---|
-| `shadowcipher-contract/package.json:20` | `"test": "vitest run"` | No test files and no vitest config — exits "No test files found" |
-| `shadowcipher-contract/package.json:21` | `"test:compile"` | Same |
-| `turbo.json:13-15` | `"test"` task defined | Never invoked |
-| root `package.json` | — | **No `test` script**, so `turbo run test` is unreachable and `npm test` fails |
-| `server/package.json` | — | No test script |
-| `frontend-vite-react/package.json` | — | No test script |
-
-`vitest ^3.2.0` is installed as a root devDependency and unused.
-
-**Highest-value targets, none currently covered:**
-
-| Target | Why |
+| Suite | Covers |
 |---|---|
-| `calculatePegs()` (`kvStore.ts:331`) | The core game rule. Pure function; duplicate-colour peg counting is exactly the logic that breaks silently |
-| `recordScore()` (`kvStore.ts:251`) | Now the single scoring path (Issue 1 fix), so a regression here is entirely unguarded |
-| Contract circuits via a simulator | `create_game` / `submit_guess` / `delete_game` are entirely unverified |
-| `/api/guess` attempt-cap enforcement | Server-side rule with no regression test |
+| `server/src/__tests__/calculatePegs.test.ts` | The core game rule: exact and empty cases, mixed positions, and the duplicate-colour counting that breaks silently (a repeated guess colour must not score twice against one occurrence; black pegs must win over white for the same colour). Includes symmetry and "four black pegs only for an identical code" invariants swept over the domain. |
+| `server/src/__tests__/scoring.test.ts` | The scoring path: one game counts once, losses never count as wins, one row per address, best-score tracking across wins and losses, and that `updateDisplayName` renames a row without touching any counter or creating one. Ends with the real declare-then-name demo flow, asserting one game yields one row. |
 
-**CI.** `.github/workflows/deploy.yml` is the only workflow and has no test or lint step. It deploys to production on every push to `main`.
+| `server/src/__tests__/apiCompat.test.ts` | That every endpoint consumed by the external site stays mounted (`/metrics`, `/metrics/users/:address`, `/metrics/:channel`, both `/achievements/*` paths, and `POST /metrics/scores`), and that the specific `/metrics` paths are registered before the `/metrics/:channel` catch-all that would otherwise swallow them. |
 
-Two aggravating details:
+The suite runs against a throwaway SQLite database (`setup.ts` redirects `SQLITE_PATH` to a temp file), so it never touches the live `data.db`.
+
+Both suites were verified to fail on the defects they guard: reintroducing the double-increment fails the accumulation test, and breaking duplicate-colour handling fails the peg tests.
+
+**Still uncovered:**
+
+| Target | Why it matters |
+|---|---|
+| Contract circuits via a simulator | `create_game` / `submit_guess` / `delete_game` remain entirely unverified |
+| `/api/guess` attempt-cap enforcement | Server-side rule; needs an HTTP-level or extracted-handler test |
+| The `/api/declare` handler end to end | The scoring inputs are tested; the handler wiring around them is not |
+
+**CI.** `.github/workflows/deploy.yml` now runs a `test` job — unit tests plus server and contract typechecks — and the `deploy` job declares `needs: test`, so a failing test or a new type error stops the release rather than reaching production.
+
+Two limitations remain in the pipeline:
 
 - The build **deletes `package-lock.json`** (`deploy.yml:20-23`) to work around an npm optional-deps bug, so CI and production install from an unpinned dependency graph. Builds are not reproducible.
 - The health check only greps PM2 for `online|launched`, and the comment explains why it cannot do better: *"We don't curl /api/status here because the sponsor wallet SDK syncs dust on startup, which can take several minutes before :3003 is bound."* Combined with `sleep 5` and `max_restarts: 10`, a crash-looping server passes the check and the deploy reports green while the API is unreachable.
@@ -105,9 +101,13 @@ Worse, the two paths keyed on **different addresses**: the server used `address 
 
 Validation was limited to `attempts` being 1-10 and `won` being a boolean. There was no session check, no auth, and no rate limit — anyone could curl a perfect score onto the leaderboard for any address. This was the one place the otherwise server-authoritative design was bypassed.
 
-**Fix.** The endpoint is removed. Scores are recorded only by `/api/declare`, from the server's own evaluation of the guess against the stored secret code.
+**Fix.** Scores are now recorded only by `/api/declare`, from the server's own evaluation of the guess against the stored secret code.
 
-The arcade name-entry overlay (which runs *after* the game ends, so it cannot be folded into declare) now calls a replacement endpoint, `POST /api/session/name`. It performs a rename only — `UPDATE players SET display_name … WHERE address = ?` — and can neither create rows nor alter any counter, so it cannot be used to forge a score. It resolves the target row through a server-side session→address map with a 10-minute window, so a caller cannot rename an arbitrary player's row either.
+`POST /api/metrics/scores` is **retained as a compatibility endpoint**, since it is part of the published API that external callers use. It keeps its exact path and response shape but no longer writes the submitted result — it returns the player's already-recorded figures, so it can be called any number of times without inflating a counter. That closes both the forgery hole and the double-count without breaking an existing caller.
+
+The arcade name-entry overlay (which runs *after* the game ends, so it cannot be folded into declare) uses a new endpoint, `POST /api/session/name`. It performs a rename only — `UPDATE players SET display_name … WHERE address = ?` — and can neither create rows nor alter any counter. It resolves the target row through a server-side session→address map with a 10-minute window, so a caller cannot rename an arbitrary player's row either.
+
+**All read endpoints are unchanged** — `GET /api/metrics`, `/api/metrics/users/:address`, `/api/metrics/:channel`, `/api/achievements/public/list`, and `/api/achievements/wallet/:wallet` keep their paths and response shapes. Anything consuming the leaderboard or achievement data is unaffected.
 
 ### Issue 3 — Abandoned sessions permanently stall the game pool (Medium) — **Resolved**
 
@@ -229,15 +229,15 @@ Worth recording, since the issue list above is necessarily one-sided:
 
 ## 6. Suggested priorities
 
-Resolved in this revision: Issues 1, 2, 3, 6, and 7 (see each entry above).
+Resolved in this revision: Issues 1, 2, 3, 6, and 7 (see each entry above), plus the zero test coverage and missing CI gate from §2.
 
 Remaining, in recommended order:
 
-1. **Reset or halve the `players` table** before presenting the leaderboard as accurate — the Issue 1 fix stops further inflation but does not repair rows already double-counted.
-2. Add tests for `calculatePegs` and `recordScore` — both are pure and cheap to cover, and `recordScore` is now the single scoring path, so a regression there is unguarded.
-3. Add a CI job running typecheck and lint before deploy, and restore lockfile-based installs (`deploy.yml` currently deletes `package-lock.json`, so production builds are not reproducible).
-4. Surface on-chain failure in the UI instead of degrading silently (Issue 4).
-5. Replace the fabricated proof-progress vocabulary with honest status text (Issue 5).
-6. Set `MIDNIGHT_NETWORK` explicitly in CI and fail loudly rather than defaulting to preprod on a mainnet app (Issue 9).
+1. **Reset or halve the `players` table** before presenting the leaderboard as accurate — the Issue 1 fix stops further inflation but does not repair rows already double-counted. This is the only outstanding item that affects what the client sees.
+2. Surface on-chain failure in the UI instead of degrading silently (Issue 4).
+3. Replace the fabricated proof-progress vocabulary with honest status text (Issue 5).
+4. Set `MIDNIGHT_NETWORK` explicitly in CI and fail loudly rather than defaulting to preprod on a mainnet app (Issue 9).
+5. Restore lockfile-based installs so production builds are reproducible (`deploy.yml` deletes `package-lock.json`).
+6. Add a contract-simulator test suite for the three circuits — the largest remaining coverage gap.
 7. Wire up `delete_game` or drop it from the shipped circuits (Issue 8).
 8. Restore the real assertion in the proof-server health check (Issue 12).
