@@ -63,6 +63,20 @@ Two limitations remain in the pipeline:
 - The build **deletes `package-lock.json`** (`deploy.yml:20-23`) to work around an npm optional-deps bug, so CI and production install from an unpinned dependency graph. Builds are not reproducible.
 - The health check only greps PM2 for `online|launched`, and the comment explains why it cannot do better: *"We don't curl /api/status here because the sponsor wallet SDK syncs dust on startup, which can take several minutes before :3003 is bound."* Combined with `sleep 5` and `max_restarts: 10`, a crash-looping server passes the check and the deploy reports green while the API is unreachable.
 
+### Deployment status
+
+The unpinned install above is not a theoretical risk — **it is currently breaking the production build.** The frontend build fails in CI with:
+
+```
+error during build:
+[vite-plugin-top-level-await] missing field `type`
+    at Compiler.printSync (node_modules/@swc/core/index.js:257:29)
+```
+
+The same build succeeds locally against the committed lockfile, so CI has resolved a newer `@swc/core` that `vite-plugin-top-level-await` cannot consume. Because the workflow deletes `package-lock.json` before installing, the pipeline picked up that incompatible version on its own, with no code change involved. **The live site therefore does not yet reflect these fixes.**
+
+Restoring lockfile-based installs is the fix, and it addresses both the reproducibility finding and this failure. The npm optional-deps bug the deletion works around is better handled by committing a lockfile that includes the Linux rollup binary (`npm install --os=linux --cpu=x64` or an `optionalDependencies` entry) than by discarding version pinning entirely. Pinning `@swc/core` would unblock the build in the interim.
+
 ---
 
 ## 3. Known issues
