@@ -99,13 +99,18 @@ It has been unreachable since **10 August**, ten days before these deploys were 
 
 Note that `games.sovo.com` resolves to CloudFront, so the site answering HTTPS `200` reflects the CDN and the previously-deployed assets, **not** a healthy origin.
 
-**Recovery.** A stop/start migrates the instance to different underlying hardware and is the standard remedy for a failed reachability check; a plain reboot usually does not clear it. The public address is an Elastic IP, so it survives a stop/start and no DNS change is needed.
+**Recovered.** A stop/start migrated the instance to different underlying hardware, which is the standard remedy for a failed reachability check (a plain reboot usually does not clear it). Both status checks now report `ok`, SSH works, the `proof-server` unit is active, both PM2 apps are online, and **both repositories now deploy green end to end** — `test` and `deploy` jobs alike. The public address is an Elastic IP, so it survived the restart and no DNS change was needed.
+
+Two follow-on problems surfaced during recovery, both now handled:
+
+- **Stale wallet caches.** After the outage both apps failed to replay dust events (`values inserted non-linearly into dust generation tree; expected to insert index 12848, but received 12839`) and hung at `Syncing dust: 0% (141125/0)`, so the port never bound. The mainnet caches were backed up to `/home/ec2-user/wallet-cache-backup-*` and cleared, and the apps restarted into a clean resync. Preprod caches were left untouched.
+- **`SQLITE_PATH` was never in effect.** `kvStore.ts` opens the database while being imported, and ES imports hoist above `index.ts`'s `loadDotenv()` call, so the variable was unset at that moment and the cwd fallback won. The deploy wrote `/opt/shadow-cipher/data.db` while the live database sat at `/opt/shadow-cipher/server/data.db`. `kvStore.ts` now loads `.env` itself before resolving the path.
 
 One precaution has already been taken, because it is the real risk here: the 20 GB gp3 root volume (`vol-01ca8f98b7bf06c19`) **had no snapshots at all and is flagged delete-on-termination**, while holding the live SQLite leaderboard (`/opt/shadow-cipher/data.db`) and the sponsor wallet cache. A full snapshot now exists — `snap-0e32c606a5cd054d0`, tagged `mf-games-pre-recovery`, 20 GB, **completed** — so that data is recoverable even if the instance never returns. The stop/start is safe to attempt against that backup.
 
 **A recurring snapshot schedule should be added regardless of how this is resolved.** A single-instance deployment whose unsnapshotted root volume holds a mainnet wallet cache and the only copy of the leaderboard is the largest operational risk in this project; an AWS Backup plan or a DLM lifecycle policy on this volume is a few minutes of setup.
 
-**Until the instance is recovered, the live site does not reflect any of the fixes in this report.**
+The fixes in this report are now deployed. The remaining gate on the app actually serving traffic is the sponsor wallet's mainnet resync, which was still in progress at the time of writing — see priority 1 in §6.
 
 The `test` job runs before the deploy job and passes, so the quality gate is not what is blocking the release.
 
@@ -135,7 +140,9 @@ Worse, the two paths keyed on **different addresses**: the server used `address 
 
 **Fix.** `POST /api/declare` is now the only path that touches `gamesPlayed`, `gamesWon`, or `bestScore`. The client's score-reporting call is gone. Where no wallet address exists the row is keyed by session (`DMO_<first-8-of-sessionId>`) rather than by display name, so the key is stable and known before the player types a name.
 
-**Leaderboard data — inspected on production; no correction applied.** The live table holds 17 player rows, 68 games played and 16 won. A repair script is provided at `server/scripts/repair-leaderboard.mjs`, but **running it is not recommended on the current data**, for a reason only visible once the real rows were examined:
+**Leaderboard data — reset.** The pre-fix table held 17 player rows (68 games played, 16 won) whose counters could not be corrected reliably; since the game had no real players yet, the table was cleared rather than adjusted, and now records only post-fix play. The prior contents are retained on the instance (`/home/ec2-user/data.db.pre-repair.*`, main file plus WAL) and in EBS snapshot `snap-0e32c606a5cd054d0` should they ever be wanted.
+
+A repair script remains at `server/scripts/repair-leaderboard.mjs` for the general case, but **its `--mode=halve` was deliberately not used**, for a reason only visible once the real rows were examined:
 
 | Row | played | won | Doubled? |
 |---|---|---|---|
@@ -149,7 +156,7 @@ Only 4 of 17 rows have both counters even. Had the double-count applied broadly,
 
 Consequently `--mode=halve` — which assumes on-chain rows are always doubled — **would corrupt this data**, turning genuine counts into invented ones. The `players` table holds only aggregates (`sessions` is empty and there is no per-game audit trail), so there is no way to prove which individual rows were affected. `DMO_MID` at 6/6 is the one plausible candidate and cannot be confirmed.
 
-The recommendation is therefore to **leave the historical figures as they are** and note the caveat wherever the leaderboard is presented, or to run `--mode=reset` for a clean start if the history is not treated as durable. Both are honest; halving is not. The script remains available, and its dry-run report lists exactly what it would change.
+Halving would therefore have replaced genuine counts with invented ones. Because the game had no real players yet, clearing the table was the honest choice and is what was done; had the history mattered, the alternative was to keep the figures and caveat them. The script's dry-run report lists exactly what it would change, and it refuses to run twice.
 
 For reference, the inflation mechanics the script models were:
 
@@ -308,7 +315,7 @@ Resolved in this revision: Issues 1, 2, 3, 6, and 7 (see each entry above), plus
 
 Remaining, in recommended order:
 
-1. **Decide how to present the historical leaderboard figures** (see Issue 1). The production table has been inspected and the counters are *not* uniformly doubled, so no automated correction is safe: either leave the 17 existing rows and caveat them, or run `repair-leaderboard.mjs --mode=reset` for a clean start. New games record correctly either way. Note also that `SQLITE_PATH` in the box's `.env` points at `/opt/shadow-cipher/data.db` while the live database is actually at `/opt/shadow-cipher/server/data.db`; the deploy now rewrites that `.env`, so confirm the path resolves to the intended file after the next release.
+1. **Confirm the sponsor wallet finishes its mainnet resync and the API binds.** After the instance recovery the cached wallet state was stale and the dust replay failed (`values inserted non-linearly into dust generation tree`), so both apps' mainnet wallet caches were cleared to force a clean resync. A full mainnet sync takes a long time; until it completes, `:3003` does not bind and `/api/status` does not answer, even though PM2 reports the process `online`. This is the health-check weakness described in §2 — verify by curling `/api/status` on the box, not by reading the deploy's green tick.
 2. Surface on-chain failure in the UI instead of degrading silently (Issue 4).
 3. Replace the fabricated proof-progress vocabulary with honest status text (Issue 5).
 4. Set `MIDNIGHT_NETWORK` explicitly in CI and fail loudly rather than defaulting to preprod on a mainnet app (Issue 9).
