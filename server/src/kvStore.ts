@@ -3,11 +3,20 @@
 // The module name stays "kvStore" so existing imports keep working.
 
 import Database from 'better-sqlite3';
+import { config as loadDotenv } from 'dotenv';
 import { randomUUID, randomBytes, randomInt } from 'crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 
 // ── Connection ────────────────────────────────────────────────────────────
+
+// This module opens the database while it is being imported, and ES imports are
+// hoisted above index.ts's dotenv call — so without loading .env here first,
+// SQLITE_PATH is still unset at this point and the deploy's configured path is
+// silently ignored in favour of the cwd fallback. Load it from the app root
+// (one level above server/) exactly as index.ts does, then from the cwd.
+loadDotenv({ path: path.resolve(process.cwd(), '..', '.env') });
+loadDotenv();
 
 const dbPath = process.env.SQLITE_PATH ?? path.resolve(process.cwd(), 'data.db');
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
