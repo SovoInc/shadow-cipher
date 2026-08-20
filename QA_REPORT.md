@@ -205,6 +205,8 @@ Validation was limited to `attempts` being 1-10 and `won` being a boolean. There
 
 One behavioural difference for integrators: an address with no recorded game now answers `{ recorded: false, player: null }` rather than creating a row from the submitted values.
 
+Verified against the running production server: `POST /api/metrics/scores` with a fabricated win returns `200 {"recorded":false,"player":null}` and leaves the leaderboard at zero players. The same request previously inserted a perfect score.
+
 The arcade name-entry overlay (which runs *after* the game ends, so it cannot be folded into declare) uses a new endpoint, `POST /api/session/name`. It performs a rename only — `UPDATE players SET display_name … WHERE address = ?` — and can neither create rows nor alter any counter. It resolves the target row through a server-side session→address map with a 10-minute window, so a caller cannot rename an arbitrary player's row either.
 
 **All read endpoints are unchanged** — `GET /api/metrics`, `/api/metrics/users/:address`, `/api/metrics/:channel`, `/api/achievements/public/list`, and `/api/achievements/wallet/:wallet` keep their paths and response shapes. Anything consuming the leaderboard or achievement data is unaffected.
