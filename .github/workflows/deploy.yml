@@ -26,6 +26,11 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # The server imports the contract package by name, and its dist/ is
+      # gitignored, so the declarations have to be built before typechecking.
+      - name: Build contract
+        run: npm run build --workspace=shadowcipher-contract
+
       - name: Typecheck (server + contract)
         run: npm run typecheck
 
