@@ -23,7 +23,7 @@ The core design is solid: **the server is authoritative for game logic.** Peg fe
 | Contract design (commit/reveal) | Sound |
 | Server-authoritative game logic | Good |
 | Leaderboard integrity | Fixed — single server-side write path |
-| Automated tests | 28 tests covering the core game rule, the scoring path, and API compatibility |
+| Automated tests | 40 tests covering the core game rule, the scoring path, API compatibility, and the leaderboard repair |
 | CI quality gate | Tests and typecheck gate the deploy |
 | Root documentation | Rewritten to match the shipped app |
 
@@ -35,7 +35,7 @@ The core design is solid: **the server is authoritative for game logic.** Peg fe
 
 The repository previously contained **no tests of any kind** — a search across all three workspaces for `*.test.*`, `*.spec.*`, `test/`, `tests/`, and `__tests__/` returned nothing, the declared `test` scripts pointed at no files, and the root `package.json` had no `test` script at all, so `npm test` failed outright.
 
-**A unit-test suite now covers the highest-risk paths — 28 tests, all passing (`npm test`):**
+**A unit-test suite now covers the highest-risk paths — 40 tests, all passing (`npm test`):**
 
 | Suite | Covers |
 |---|---|
@@ -43,6 +43,7 @@ The repository previously contained **no tests of any kind** — a search across
 | `server/src/__tests__/scoring.test.ts` | The scoring path: one game counts once, losses never count as wins, one row per address, best-score tracking across wins and losses, and that `updateDisplayName` renames a row without touching any counter or creating one. Ends with the real declare-then-name demo flow, asserting one game yields one row. |
 
 | `server/src/__tests__/apiCompat.test.ts` | That every endpoint consumed by the external site stays mounted (`/metrics`, `/metrics/users/:address`, `/metrics/:channel`, both `/achievements/*` paths, and `POST /metrics/scores`), and that the specific `/metrics` paths are registered before the `/metrics/:channel` catch-all that would otherwise swallow them. |
+| `server/src/__tests__/repairLeaderboard.test.ts` | The leaderboard repair script: that it restores the true count on doubled rows, leaves odd-countered rows alone instead of guessing, never alters `best_score`, never drops a played game below one, writes a backup, defaults to a dry run, and refuses a second `--mode=halve` while leaving the corrected data intact. |
 
 The suite runs against a throwaway SQLite database (`setup.ts` redirects `SQLITE_PATH` to a temp file), so it never touches the live `data.db`.
 
@@ -117,7 +118,26 @@ Worse, the two paths keyed on **different addresses**: the server used `address 
 
 **Fix.** `POST /api/declare` is now the only path that touches `gamesPlayed`, `gamesWon`, or `bestScore`. The client's score-reporting call is gone. Where no wallet address exists the row is keyed by session (`DMO_<first-8-of-sessionId>`) rather than by display name, so the key is stable and known before the player types a name.
 
-**Leaderboard data.** Figures accumulated before this fix remain inflated (roughly 2× on games played and won, with some players split across rows). The counters are not self-correcting, so the `players` table should be reset — or halved — before the leaderboard is presented as accurate.
+**Leaderboard data.** Figures accumulated before the fix are still wrong, and the counters are not self-correcting. A repair script is provided at `server/scripts/repair-leaderboard.mjs`; it ships with the deploy, so it can be run on the box once the deploy is unblocked:
+
+```bash
+cd /opt/shadow-cipher/server
+node scripts/repair-leaderboard.mjs --db=/opt/shadow-cipher/data.db                    # report
+node scripts/repair-leaderboard.mjs --db=/opt/shadow-cipher/data.db --mode=halve --apply
+```
+
+The inflation is **not uniform**, which is why the script does not simply halve everything:
+
+| Play mode | Server key (`/api/declare`) | Client key (`/api/metrics/scores`) | Effect |
+|---|---|---|---|
+| On-chain | `address` (16-char wallet slice) | `displayAddress.slice(0, 16)` — same | One row counting every game **twice** |
+| Demo | `DMO_${displayName \|\| 'ANO'}` — usually `DMO_ANO`, since declare ran before the name overlay | `DMO_${arcadeName}` | One game **split across two rows**, each counting it once |
+
+So `--mode=halve` corrects only the rows the same-key double count actually affected: on-chain rows, and demo rows whose counters are even. Rows with odd counters are left alone, because an odd count means one leg was never recorded and halving would invent a number rather than restore one. `best_score` is never touched — it was a minimum over attempts, so it never inflated.
+
+Split demo rows (a `DMO_ANO` row alongside named demo rows) **cannot be reunited automatically** — two rows are indistinguishable from two players — so the script reports them for a human decision. If the leaderboard is not treated as durable history, `--mode=reset` is the only option guaranteed to leave no wrong number.
+
+The script defaults to a dry run, writes a timestamped `.bak` of the database before applying, runs as a single transaction, and records that it ran so a second `--mode=halve` is refused rather than halving already-corrected rows. Its behaviour is covered by 12 tests in `server/src/__tests__/repairLeaderboard.test.ts`.
 
 ### Issue 2 — Score submission is unauthenticated and client-trusted (High, security) — **Resolved**
 
@@ -263,7 +283,7 @@ Resolved in this revision: Issues 1, 2, 3, 6, and 7 (see each entry above), plus
 
 Remaining, in recommended order:
 
-1. **Reset or halve the `players` table** before presenting the leaderboard as accurate — the Issue 1 fix stops further inflation but does not repair rows already double-counted. This is the only outstanding item that affects what the client sees.
+1. **Run `server/scripts/repair-leaderboard.mjs` against the production database** once the deploy is unblocked (see Issue 1). The script is written and tested, but it has not been run: the live database is at `/opt/shadow-cipher/data.db` on the EC2 instance, which is currently unreachable over SSH. Review its report output before applying, and decide by hand what to do with any split demo rows it flags.
 2. Surface on-chain failure in the UI instead of degrading silently (Issue 4).
 3. Replace the fabricated proof-progress vocabulary with honest status text (Issue 5).
 4. Set `MIDNIGHT_NETWORK` explicitly in CI and fail loudly rather than defaulting to preprod on a mainnet app (Issue 9).
