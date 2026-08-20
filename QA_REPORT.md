@@ -101,7 +101,9 @@ Note that `games.sovo.com` resolves to CloudFront, so the site answering HTTPS `
 
 **Recovery.** A stop/start migrates the instance to different underlying hardware and is the standard remedy for a failed reachability check; a plain reboot usually does not clear it. The public address is an Elastic IP, so it survives a stop/start and no DNS change is needed.
 
-One precaution first, because it is the real risk here: the 20 GB gp3 root volume (`vol-01ca8f98b7bf06c19`) **had no snapshots and is flagged delete-on-termination**, while holding the live SQLite leaderboard (`/opt/shadow-cipher/data.db`) and the sponsor wallet cache. A snapshot has been taken (`snap-0e32c606a5cd054d0`, "mf-games-pre-recovery") so that data is recoverable if the instance does not come back. **A recurring snapshot schedule should be added regardless of how this is resolved** — a single-instance deployment with an unsnapshotted volume holding the wallet cache and the only copy of the leaderboard is the largest operational risk in this project.
+One precaution has already been taken, because it is the real risk here: the 20 GB gp3 root volume (`vol-01ca8f98b7bf06c19`) **had no snapshots at all and is flagged delete-on-termination**, while holding the live SQLite leaderboard (`/opt/shadow-cipher/data.db`) and the sponsor wallet cache. A full snapshot now exists — `snap-0e32c606a5cd054d0`, tagged `mf-games-pre-recovery`, 20 GB, **completed** — so that data is recoverable even if the instance never returns. The stop/start is safe to attempt against that backup.
+
+**A recurring snapshot schedule should be added regardless of how this is resolved.** A single-instance deployment whose unsnapshotted root volume holds a mainnet wallet cache and the only copy of the leaderboard is the largest operational risk in this project; an AWS Backup plan or a DLM lifecycle policy on this volume is a few minutes of setup.
 
 **Until the instance is recovered, the live site does not reflect any of the fixes in this report.**
 
