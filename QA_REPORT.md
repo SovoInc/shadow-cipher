@@ -135,22 +135,30 @@ Worse, the two paths keyed on **different addresses**: the server used `address 
 
 **Fix.** `POST /api/declare` is now the only path that touches `gamesPlayed`, `gamesWon`, or `bestScore`. The client's score-reporting call is gone. Where no wallet address exists the row is keyed by session (`DMO_<first-8-of-sessionId>`) rather than by display name, so the key is stable and known before the player types a name.
 
-**Leaderboard data.** Figures accumulated before the fix are still wrong, and the counters are not self-correcting. A repair script is provided at `server/scripts/repair-leaderboard.mjs`; it ships with the deploy, so it can be run on the box once the deploy is unblocked:
+**Leaderboard data — inspected on production; no correction applied.** The live table holds 17 player rows, 68 games played and 16 won. A repair script is provided at `server/scripts/repair-leaderboard.mjs`, but **running it is not recommended on the current data**, for a reason only visible once the real rows were examined:
 
-```bash
-cd /opt/shadow-cipher/server
-node scripts/repair-leaderboard.mjs --db=/opt/shadow-cipher/data.db                    # report
-node scripts/repair-leaderboard.mjs --db=/opt/shadow-cipher/data.db --mode=halve --apply
-```
+| Row | played | won | Doubled? |
+|---|---|---|---|
+| `mn_shield-addr1x` | 29 | 0 | No — an odd count cannot be a doubled one |
+| `mn_shield-addr14` | 4 | 1 | No — `won` is odd |
+| `mn_shield-addr1z` | 2 | 1 | No — `won` is odd |
+| `mn_shield-addr1s` | 2 | 1 | No — `won` is odd |
+| `DMO_MID` | 6 | 6 | Possibly — a 100% win rate is the signature, but unprovable |
 
-The inflation is **not uniform**, which is why the script does not simply halve everything:
+Only 4 of 17 rows have both counters even. Had the double-count applied broadly, nearly every row would be even. The explanation is in the pre-fix client: `submitScore` required `displayAddress` to be set, so the second write frequently never happened, and rows accumulated **once**, not twice.
+
+Consequently `--mode=halve` — which assumes on-chain rows are always doubled — **would corrupt this data**, turning genuine counts into invented ones. The `players` table holds only aggregates (`sessions` is empty and there is no per-game audit trail), so there is no way to prove which individual rows were affected. `DMO_MID` at 6/6 is the one plausible candidate and cannot be confirmed.
+
+The recommendation is therefore to **leave the historical figures as they are** and note the caveat wherever the leaderboard is presented, or to run `--mode=reset` for a clean start if the history is not treated as durable. Both are honest; halving is not. The script remains available, and its dry-run report lists exactly what it would change.
+
+For reference, the inflation mechanics the script models were:
 
 | Play mode | Server key (`/api/declare`) | Client key (`/api/metrics/scores`) | Effect |
 |---|---|---|---|
 | On-chain | `address` (16-char wallet slice) | `displayAddress.slice(0, 16)` — same | One row counting every game **twice** |
 | Demo | `DMO_${displayName \|\| 'ANO'}` — usually `DMO_ANO`, since declare ran before the name overlay | `DMO_${arcadeName}` | One game **split across two rows**, each counting it once |
 
-So `--mode=halve` corrects only the rows the same-key double count actually affected: on-chain rows, and demo rows whose counters are even. Rows with odd counters are left alone, because an odd count means one leg was never recorded and halving would invent a number rather than restore one. `best_score` is never touched — it was a minimum over attempts, so it never inflated.
+`--mode=halve` targets the rows that model predicts were doubled — on-chain rows, and demo rows whose counters are even — and leaves odd counters alone, since an odd count proves one leg was never recorded. `best_score` is never touched, being a minimum over attempts that never inflated. The production data above shows the model over-predicts in practice, which is why it is not being applied here; the mode remains useful only if a future dataset genuinely shows uniform doubling.
 
 Split demo rows (a `DMO_ANO` row alongside named demo rows) **cannot be reunited automatically** — two rows are indistinguishable from two players — so the script reports them for a human decision. If the leaderboard is not treated as durable history, `--mode=reset` is the only option guaranteed to leave no wrong number.
 
@@ -300,7 +308,7 @@ Resolved in this revision: Issues 1, 2, 3, 6, and 7 (see each entry above), plus
 
 Remaining, in recommended order:
 
-1. **Run `server/scripts/repair-leaderboard.mjs` against the production database** once the deploy is unblocked (see Issue 1). The script is written and tested, but it has not been run: the live database is at `/opt/shadow-cipher/data.db` on the EC2 instance, which is currently unreachable over SSH. Review its report output before applying, and decide by hand what to do with any split demo rows it flags.
+1. **Decide how to present the historical leaderboard figures** (see Issue 1). The production table has been inspected and the counters are *not* uniformly doubled, so no automated correction is safe: either leave the 17 existing rows and caveat them, or run `repair-leaderboard.mjs --mode=reset` for a clean start. New games record correctly either way. Note also that `SQLITE_PATH` in the box's `.env` points at `/opt/shadow-cipher/data.db` while the live database is actually at `/opt/shadow-cipher/server/data.db`; the deploy now rewrites that `.env`, so confirm the path resolves to the intended file after the next release.
 2. Surface on-chain failure in the UI instead of degrading silently (Issue 4).
 3. Replace the fabricated proof-progress vocabulary with honest status text (Issue 5).
 4. Set `MIDNIGHT_NETWORK` explicitly in CI and fail loudly rather than defaulting to preprod on a mainnet app (Issue 9).
