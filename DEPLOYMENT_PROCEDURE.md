@@ -106,9 +106,89 @@ Two options:
 ```
 /opt/shadow-cipher/
 ├── .env                      # written by CI from secrets (contains WALLET_SEED)
-├── data.db                   # SQLite: pool, sessions, players
+├── data.db                   # SQLite: pool, sessions, players (SQLITE_PATH)
 ├── dist/                     # frontend static build (served by nginx)
 ├── server/                   # sponsor server TS source, run via tsx under PM2
-│   └── ecosystem.config.cjs  # PM2 app: shadow-cipher-sponsor
+│   ├── ecosystem.config.cjs  # PM2 app: shadow-cipher-sponsor
+│   ├── scripts/              # operational scripts (leaderboard repair)
+│   └── wallet-cache/         # derived wallet state — safe to delete, see below
 └── shadowcipher-contract/    # contract package incl. src/managed ZK artifacts
+```
+
+The instance is shared with the sibling **guess-who** deployment at
+`/opt/proof-of-spy/` (PM2 app `proof-of-spy`) and one `proof-server` systemd unit
+serves both. Restarting the box affects both games.
+
+## Operational runbook
+
+### The deploy is green but the API does not answer
+
+Expected during a normal restart: the sponsor wallet syncs DUST before binding its
+port, which takes minutes. PM2 reports `online` throughout, and the deploy's health
+check only greps PM2 — so a green deploy does **not** mean the API is serving.
+
+```bash
+curl -s localhost:3003/api/status            # the real check
+pm2 logs shadow-cipher-sponsor --lines 40    # watch "Syncing dust: N%"
+```
+
+If the percentage climbs, wait. If it sits at `0% (<n>/0)` and the error log shows
+
+```
+values inserted non-linearly into dust generation tree;
+expected to insert index 12848, but received 12839
+```
+
+the cached wallet state is stale — typically after the instance was stopped or lost
+connectivity. The cache is derived data rebuilt from chain, so clearing it is safe
+(the seed lives in `.env`); a full resync then takes a while:
+
+```bash
+pm2 stop shadow-cipher-sponsor
+mkdir -p ~/wallet-cache-backup-$(date +%F-%H%M%S)
+cp /opt/shadow-cipher/server/wallet-cache/mainnet-*.json ~/wallet-cache-backup-*/
+rm -f /opt/shadow-cipher/server/wallet-cache/mainnet-*.json
+pm2 restart shadow-cipher-sponsor --update-env
+```
+
+Do not restart again while the resync is running — it starts over from 0%.
+
+### The instance is unreachable over SSH
+
+Check the AWS status first; a failed *reachability* check is an AWS-side fault, not a
+firewall or key problem:
+
+```bash
+aws ec2 describe-instance-status --region us-east-2 \
+  --instance-ids i-0364549066b2aab49 \
+  --query 'InstanceStatuses[].{Sys:SystemStatus.Status,Inst:InstanceStatus.Status}'
+```
+
+`impaired` with `reachability: failed` is cleared by a **stop/start**, which moves the
+instance to different hardware; a plain reboot usually does not. The public address is
+an Elastic IP, so it survives and no DNS change is needed. **Snapshot the root volume
+first** — see below. Note that `games.sovo.com` resolves to CloudFront, so the site
+answering `200` says nothing about the origin being healthy.
+
+### Backups — action required
+
+The root volume (`vol-01ca8f98b7bf06c19`) holds the SQLite database and the sponsor
+wallet cache, and is flagged delete-on-termination. It had **no snapshots at all**
+until `snap-0e32c606a5cd054d0` was taken manually during the August 2026 recovery.
+
+There is still no recurring schedule, and this is the largest operational risk in the
+deployment. Create one — either an AWS Backup plan, or a DLM policy (which needs the
+`AWSDataLifecycleManagerDefaultRole` service role created first, as it does not yet
+exist in this account):
+
+```bash
+aws dlm create-default-role --resource-type snapshot --region us-east-2
+# then create a daily policy targeting the volume, with e.g. 7-day retention
+```
+
+A manual snapshot before any risky operation is the interim habit:
+
+```bash
+aws ec2 create-snapshot --region us-east-2 --volume-id vol-01ca8f98b7bf06c19 \
+  --description "pre-change $(date +%F)"
 ```
