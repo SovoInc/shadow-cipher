@@ -42,7 +42,9 @@ export function buildLeaderboardRouter(): Router {
 
     const player = (await getPlayers()).find((p) => p.address === address);
     if (!player) {
-      return res.status(404).json({ error: 'No recorded game for this address' });
+      // The old endpoint always answered 200, so stay on that contract rather
+      // than turning "nothing recorded yet" into an error for existing callers.
+      return res.json({ recorded: false, player: null });
     }
 
     res.json({

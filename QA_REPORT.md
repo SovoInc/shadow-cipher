@@ -73,9 +73,23 @@ error during build:
     at Compiler.printSync (node_modules/@swc/core/index.js:257:29)
 ```
 
-The same build succeeds locally against the committed lockfile, so CI has resolved a newer `@swc/core` that `vite-plugin-top-level-await` cannot consume. Because the workflow deletes `package-lock.json` before installing, the pipeline picked up that incompatible version on its own, with no code change involved. **The live site therefore does not yet reflect these fixes.**
+The same build succeeded locally against the committed lockfile, so CI had resolved a newer `@swc/core` (1.16.1) that `vite-plugin-top-level-await` cannot consume, while the lockfile pins 1.15.8. Because the workflow deletes `package-lock.json` before installing, the pipeline picked up that incompatible version on its own, with no code change involved.
 
-Restoring lockfile-based installs is the fix, and it addresses both the reproducibility finding and this failure. The npm optional-deps bug the deletion works around is better handled by committing a lockfile that includes the Linux rollup binary (`npm install --os=linux --cpu=x64` or an `optionalDependencies` entry) than by discarding version pinning entirely. Pinning `@swc/core` would unblock the build in the interim.
+**Fixed** by pinning `@swc/core` to 1.15.8 in the root `overrides`, which holds even when the lockfile is deleted. Verified by reproducing CI's conditions exactly — cloning the repo, deleting `package-lock.json`, installing, and running `build-production`, which now succeeds. The build step passes in CI.
+
+Restoring lockfile-based installs remains the better long-term fix, since the override treats one symptom of an unpinned graph. The npm optional-deps bug the deletion works around is better handled by committing a lockfile that includes the Linux rollup binary (`npm install --os=linux --cpu=x64`, or an `optionalDependencies` entry) than by discarding version pinning entirely.
+
+**The deploy is now blocked one step later, at the EC2 connection:**
+
+```
+ssh: connect to host *** port 22: Connection timed out
+```
+
+**The instance itself is healthy** — the sibling deployment on the same box answers HTTPS `200` and port 443 accepts connections, while port 22 times out from GitHub Actions runners and from a local machine alike. That points at **SSH ingress** (most likely a security-group rule that no longer admits the runners) rather than a stopped instance or a stale `EC2_HOST`. The same failure blocks the sibling guess-who repository, so one infrastructure fix covers both.
+
+Suggested fix, in order of likelihood: confirm port 22 ingress on the instance's security group; if it was restricted to specific addresses, either widen it to GitHub's published Actions ranges or switch the deploy to a self-hosted runner, AWS SSM Session Manager, or a bastion. **Until then the live site does not reflect any of the fixes in this report.**
+
+The `test` job runs before the deploy job and passes, so the quality gate is not what is blocking the release.
 
 ---
 
@@ -117,7 +131,9 @@ Validation was limited to `attempts` being 1-10 and `won` being a boolean. There
 
 **Fix.** Scores are now recorded only by `/api/declare`, from the server's own evaluation of the guess against the stored secret code.
 
-`POST /api/metrics/scores` is **retained as a compatibility endpoint**, since it is part of the published API that external callers use. It keeps its exact path and response shape but no longer writes the submitted result — it returns the player's already-recorded figures, so it can be called any number of times without inflating a counter. That closes both the forgery hole and the double-count without breaking an existing caller.
+`POST /api/metrics/scores` is **retained as a compatibility endpoint**, since it is part of the published API that external callers use. It keeps its exact path and its `{ recorded, player }` response shape, and still answers 200, but it no longer writes the submitted result — it returns the player's already-recorded figures, so it can be called any number of times without inflating a counter. That closes both the forgery hole and the double-count without breaking an existing caller.
+
+One behavioural difference for integrators: an address with no recorded game now answers `{ recorded: false, player: null }` rather than creating a row from the submitted values.
 
 The arcade name-entry overlay (which runs *after* the game ends, so it cannot be folded into declare) uses a new endpoint, `POST /api/session/name`. It performs a rename only — `UPDATE players SET display_name … WHERE address = ?` — and can neither create rows nor alter any counter. It resolves the target row through a server-side session→address map with a 10-minute window, so a caller cannot rename an arbitrary player's row either.
 
