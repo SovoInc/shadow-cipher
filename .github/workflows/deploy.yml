@@ -23,13 +23,14 @@ jobs:
           rm -f package-lock.json
           npm install
 
-      - name: Unit tests
-        run: npm test
-
-      # The server imports the contract package by name, and its dist/ is
-      # gitignored, so the declarations have to be built before typechecking.
+      # Must precede both the tests and the typecheck: the contract is imported
+      # by package name and resolves through its dist/, which is gitignored and
+      # so absent from a fresh checkout.
       - name: Build contract
         run: npm run build --workspace=shadowcipher-contract
+
+      - name: Unit tests
+        run: npm test
 
       - name: Typecheck (server + contract)
         run: npm run typecheck
