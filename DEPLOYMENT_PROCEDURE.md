@@ -1,208 +1,114 @@
-# Deployment Procedure for Vercel
+# Deployment Procedure
 
-## Prerequisites
+Shadow Cipher deploys to a single **AWS EC2** instance via **GitHub Actions**
+(`.github/workflows/deploy.yml`). There is no Vercel involved.
 
-- GitHub repository connected to Vercel
-- Midnight contract deployed and contract address available
-- Vercel account with project created
+## Overview
 
-## One-Time Setup in Vercel
+**Trigger:** every push to `main`, or manually via **Actions → Deploy → Run workflow**
+(`workflow_dispatch`).
 
-### 1. Enable Git LFS (CRITICAL)
-This project uses Git LFS for contract keys. You MUST enable this:
+The workflow has no test or lint gate — whatever lands on `main` goes straight to
+production.
 
-1. Go to **[Vercel Dashboard](https://vercel.com/dashboard)**
-2. Select your project
-3. Go to **Settings → Git**
-4. Find **"Git LFS"** option
-5. **Toggle it ON**
-6. Click **Save**
+### Pipeline steps
 
-### 2. Configure Environment Variables
+1. **Checkout + Node 22** (`actions/setup-node`, npm cache).
+2. **Install dependencies** — `package-lock.json` is deleted first and `npm install` is
+   run. This works around an npm optional-deps bug (the lockfile was generated on
+   darwin-arm64, so the Linux rollup native addon is missing from it —
+   [npm/cli#4828](https://github.com/npm/cli/issues/4828)). Consequence: CI installs from
+   an **unpinned** dependency graph; builds are not reproducible.
+3. **Build** — `npm run build-production` (contract `tsc` build, then the frontend Vite
+   build, which first copies the ZK key/zkir artifacts into
+   `frontend-vite-react/public/midnight/shadowcipher/`). The frontend build receives
+   `VITE_CONTRACT_ADDRESS` and `VITE_SPONSOR_URL` from repo secrets.
+4. **Deploy to EC2** over SSH as `ec2-user`, into `/opt/shadow-cipher/`:
+   - Writes a **fresh `.env`** on the box from repo secrets
+     (`PORT=3003`, `WALLET_SEED`, `SHADOWCIPHER_CONTRACT_ADDRESS`, `MIDNIGHT_NETWORK`,
+     `PROOF_SERVER_URL`, `SQLITE_PATH=/opt/shadow-cipher/data.db`, `POOL_TARGET_SIZE`).
+   - `rsync --delete` the frontend build → `/opt/shadow-cipher/dist/` (served statically
+     by nginx, which also reverse-proxies `/api` to the sponsor server).
+   - `rsync --delete` the server TypeScript source → `/opt/shadow-cipher/server/`
+     (no compile step — PM2 runs it directly with `tsx/esm`, see
+     `server/ecosystem.config.cjs`).
+   - `rsync --delete` the contract package → `/opt/shadow-cipher/shadowcipher-contract/`
+     (the runtime needs `src/managed/` for ZK keys).
+   - Copies root `package.json` / `package-lock.json` / `turbo.json`, then on the box:
+     `rm -f package-lock.json && npm install` (dev deps included — tsx is a devDependency),
+     then `pm2 reload shadow-cipher-sponsor --update-env || pm2 start server/ecosystem.config.cjs`
+     and `pm2 save`.
+   - Ensures the shared **proof server** systemd unit is active
+     (`sudo systemctl start proof-server` — the unit is shared with other apps on the box).
+5. **Health check** — see the limitation below.
 
-Go to **Settings → Environment Variables** and add:
+## Required GitHub repo secrets
 
-| Variable | Value | Environment |
-|----------|-------|-------------|
-| `VITE_CONTRACT_ADDRESS` | Your deployed contract address | Production, Preview, Development |
+| Secret | Purpose |
+|---|---|
+| `EC2_HOST` | Hostname/IP of the EC2 instance |
+| `EC2_SSH_KEY` | Private SSH key for `ec2-user` |
+| `WALLET_SEED` | Sponsor wallet seed (mainnet — treat as highly sensitive) |
+| `SHADOWCIPHER_CONTRACT_ADDRESS` | Deployed contract address (unset ⇒ server deploys a new contract on boot) |
+| `MIDNIGHT_NETWORK` | Target network — **must be set to `mainnet`**, see caveat below |
+| `PROOF_SERVER_URL` | Proof server endpoint (defaults to `http://localhost:6300`) |
+| `POOL_TARGET_SIZE` | Game pool size (defaults to `20`) |
+| `VITE_CONTRACT_ADDRESS` | Frontend build-time contract address (UI display) |
+| `VITE_SPONSOR_URL` | Frontend build-time sponsor URL (blank ⇒ same-origin via nginx) |
 
-### 3. Verify Build Settings
+### Network default caveat
 
-Go to **Settings → General → Build & Development Settings**
+If the `MIDNIGHT_NETWORK` secret is missing, the workflow writes
+`MIDNIGHT_NETWORK=preprod` into the box's `.env` (`deploy.yml` uses
+`${MIDNIGHT_NETWORK:-preprod}`), and `server/src/config.ts` likewise defaults to
+`preprod`. The application is mainnet-only, so a missing secret **silently deploys
+against the wrong network** instead of failing loudly. Always verify the secret is set.
 
-Should show (from `vercel.json`):
-- **Framework Preset**: Vite
-- **Build Command**: `npm run build-production`
-- **Output Directory**: `frontend-vite-react/dist`
-- **Install Command**: `npm install`
+## Health-check limitation
 
-If these are incorrect, either:
-- Delete and re-import the project (to pick up `vercel.json`)
-- Or manually set these values
-
-## Deployment Steps
-
-### Every Deployment
-
-1. **Ensure contract keys are up to date**
-   ```bash
-   # Regenerate contract keys if needed
-   cd counter-contract
-   npm run compact
-   npm run build
-   ```
-
-2. **Commit and push changes**
-   ```bash
-   git add .
-   git commit -m "Your commit message"
-   git push
-   ```
-
-3. **Vercel automatically deploys** from main branch
-
-### Manual Deployment (if needed)
-
-1. Go to **Vercel Dashboard → Deployments**
-2. Click **"..."** on the latest deployment
-3. Click **"Redeploy"**
-4. Uncheck "Use existing Build Cache"
-5. Click **Redeploy**
-
-## Post-Deployment Verification
-
-### 1. Check Build Logs
-
-1. Go to latest deployment
-2. Click **"Building"** tab
-3. Verify you see:
-   ```bash
-   > npm run build-production
-   > cd counter-contract && npm run build
-   > cd ../frontend-vite-react && npm run build
-   > copy-contract-keys
-   ```
-
-### 2. Verify Contract Keys are Accessible
-
-Visit these URLs (replace with your domain):
+The final step only greps PM2 output:
 
 ```
-https://your-app.vercel.app/midnight/counter/keys/increment.verifier
+pm2 status shadow-cipher-sponsor | grep -E "online|launched"
 ```
 
-Should:
-- Return **200 OK**
-- Download a file of **1,291 bytes**
-- NOT show 404 or Git LFS pointer text
+It deliberately does **not** curl `/api/status`, because on startup the sponsor wallet
+SDK syncs DUST, which can take **several minutes** before port `:3003` is bound. Combined
+with the `sleep 5` and PM2's `restart_delay: 5000` / `max_restarts: 10`, a crash-looping
+server can still pass this check and the deploy can report green while the API is
+unreachable.
 
-### 3. Test the Application
+**After every deploy**, watch the startup by hand:
 
-1. Open your deployed app
-2. Connect wallet
-3. Navigate to Counter page
-4. Try incrementing the counter
-5. Should work without "mismatched verifier keys" error
-
-## Common Issues & Quick Fixes
-
-### Issue: "mismatched verifier keys" error
-
-**Cause**: Git LFS not enabled or LFS files not pulled
-
-**Fix**:
-1. Enable Git LFS in Vercel (Settings → Git)
-2. Redeploy without cache
-
-### Issue: 404 on contract key files
-
-**Cause**: Build command not using `build-production`
-
-**Fix**:
-1. Check Build Settings (step 3 above)
-2. Ensure `npm run build-production` is the build command
-3. Redeploy
-
-### Issue: Files show Git LFS pointer text instead of binary
-
-**Cause**: Git LFS not enabled in Vercel
-
-**Fix**:
-1. Enable Git LFS toggle in Settings → Git
-2. Must redeploy after enabling
-
-## Build Process Flow
-
-For reference, here's what happens during build:
-
-```
-1. Vercel clones repo with Git LFS enabled
-   → Downloads actual binary files (not pointers)
-
-2. npm install
-   → Installs all dependencies
-
-3. npm run build-production
-
-   3a. cd counter-contract && npm run build
-       → Compiles contract
-       → Generates/copies keys to counter-contract/dist/managed/
-
-   3b. cd ../frontend-vite-react && npm run build
-
-       3b.1. npm run copy-contract-keys
-             → Copies keys from counter-contract/src/managed/
-             → To frontend-vite-react/public/midnight/counter/
-
-       3b.2. vite build
-             → Bundles frontend
-             → Copies public/ to dist/
-             → Output: frontend-vite-react/dist/
-
-4. Vercel deploys frontend-vite-react/dist/
+```bash
+ssh ec2-user@<EC2_HOST>
+pm2 logs shadow-cipher-sponsor --lines 50   # watch dust sync progress
+curl -s localhost:3003/api/status | jq      # once the port is bound
 ```
 
-## File Structure After Build
+## Manual deployment
+
+Two options:
+
+1. **Re-run the pipeline:** the workflow declares `workflow_dispatch`, so trigger it from
+   the GitHub UI (**Actions → Deploy → Run workflow**) without pushing a commit. This is
+   the preferred manual path — it uses the exact same steps and secrets.
+2. **By hand:** replicate the workflow — build locally
+   (`npm install && npm run build-production` with the `VITE_*` vars exported), rsync
+   `frontend-vite-react/dist/`, `server/` and `shadowcipher-contract/` to
+   `/opt/shadow-cipher/` as above, ensure `/opt/shadow-cipher/.env` is correct, then on
+   the box run `npm install` and `pm2 reload shadow-cipher-sponsor --update-env` (or
+   `pm2 start server/ecosystem.config.cjs`). Do not edit files on the box directly — the
+   next CI run rsyncs with `--delete` and will overwrite them.
+
+## Runtime layout on the box
 
 ```
-frontend-vite-react/dist/
-├── index.html
-├── assets/
-│   ├── index-*.js
-│   ├── App-*.js
-│   └── ...
-└── midnight/
-    └── counter/
-        ├── keys/
-        │   ├── increment.prover      (278,053 bytes)
-        │   └── increment.verifier    (1,291 bytes)
-        └── zkir/
-            ├── increment.zkir        (784 bytes)
-            └── increment.bzkir       (64 bytes)
+/opt/shadow-cipher/
+├── .env                      # written by CI from secrets (contains WALLET_SEED)
+├── data.db                   # SQLite: pool, sessions, players
+├── dist/                     # frontend static build (served by nginx)
+├── server/                   # sponsor server TS source, run via tsx under PM2
+│   └── ecosystem.config.cjs  # PM2 app: shadow-cipher-sponsor
+└── shadowcipher-contract/    # contract package incl. src/managed ZK artifacts
 ```
-
-## Emergency Rollback
-
-If a deployment fails:
-
-1. Go to **Deployments**
-2. Find last working deployment
-3. Click **"..."** → **"Promote to Production"**
-
-## Checklist Before First Deployment
-
-- [ ] Git LFS enabled in Vercel Settings → Git
-- [ ] Environment variable `VITE_CONTRACT_ADDRESS` set
-- [ ] Build command is `npm run build-production`
-- [ ] Output directory is `frontend-vite-react/dist`
-- [ ] Contract keys committed to repository
-- [ ] All changes pushed to main branch
-
-## Checklist For Every Deployment
-
-- [ ] Contract keys are up to date (if contract changed)
-- [ ] Environment variables are correct
-- [ ] Changes committed and pushed
-- [ ] Build logs show successful compilation
-- [ ] Contract key files are accessible (not 404)
-- [ ] Application works without errors

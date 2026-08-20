@@ -121,10 +121,26 @@ const updateSessionStmt = db.prepare<[string, string, number, string]>(
 );
 const deleteSessionStmt = db.prepare<[string]>('DELETE FROM sessions WHERE session_id = ?');
 const sweepSessionsStmt = db.prepare<[number]>('DELETE FROM sessions WHERE expires_at <= ?');
+const countExpiredOnChainStmt = db.prepare<[number]>(
+  'SELECT COUNT(*) AS n FROM sessions WHERE expires_at <= ? AND contract_addr IS NOT NULL',
+);
+
+// Called with the number of expired on-chain sessions the sweep removed, so the
+// in-memory active-session counter (poolWorker.ts) can be released — otherwise
+// abandoned games would pause pool refill forever.
+let onSessionsExpired: ((count: number) => void) | undefined;
+export function setOnSessionsExpired(fn: (count: number) => void): void {
+  onSessionsExpired = fn;
+}
 
 // Sweep expired sessions every 10 min.
 setInterval(() => {
-  try { sweepSessionsStmt.run(Math.floor(Date.now() / 1000)); } catch { /* ignore */ }
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const { n: expiredOnChain } = countExpiredOnChainStmt.get(now) as { n: number };
+    sweepSessionsStmt.run(now);
+    if (expiredOnChain > 0) onSessionsExpired?.(expiredOnChain);
+  } catch { /* ignore */ }
 }, 10 * 60 * 1000).unref();
 
 export async function createSession(
@@ -276,6 +292,21 @@ export async function recordScore(
     player.lastActive,
   );
   return player;
+}
+
+const updatePlayerNameStmt = db.prepare<[string, string, string]>(
+  'UPDATE players SET display_name = ?, last_active = ? WHERE address = ?',
+);
+
+/**
+ * Update only the display name of an existing player row (arcade name entry
+ * after game over). Never touches gamesPlayed/gamesWon/bestScore — the score
+ * itself is recorded exclusively by /api/declare via recordScore().
+ */
+export async function updateDisplayName(address: string, displayName: string): Promise<PlayerRecord | null> {
+  updatePlayerNameStmt.run(displayName, new Date().toISOString(), address);
+  const row = selectPlayer.get(address) as PlayerRow | undefined;
+  return row ? rowToPlayer(row) : null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

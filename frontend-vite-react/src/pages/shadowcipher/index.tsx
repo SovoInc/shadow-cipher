@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useWallet } from '@/modules/midnight/wallet-widget/hooks/useWallet';
 import { MidnightWallet } from '@/modules/midnight/wallet-widget/ui/midnightWallet';
-import { startGame, submitGuess as sponsorSubmitGuess, declareAnswer, type GuessResponse } from '@/lib/sponsorApi';
+import { startGame, submitGuess as sponsorSubmitGuess, declareAnswer, submitDisplayName } from '@/lib/sponsorApi';
 
 const COLORS = ['#FF4D4D', '#4D79FF', '#FFCF4D', '#4DFF88', '#D94DFF', '#FF8C4D'];
 const COLOR_NAMES = ['RED', 'BLUE', 'YELLOW', 'GREEN', 'PURPLE', 'ORANGE'];
@@ -188,11 +188,12 @@ export const ShadowCipher = () => {
           addLog(`Result: ${result.black}✓ / ${result.white}~`, 'info');
           setProgress(100);
 
-          // Final declaration — triggers on-chain ZK proof if available
+          // Final declaration — triggers on-chain ZK proof if available.
+          // The server records the score here; the client never reports results.
           addLog('CIPHER DECRYPTED! Submitting ZK proof on-chain...', 'proof');
           try {
-            const walletAddr = displayAddress?.slice(0, 16);
-            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'MID';
+            const walletAddr = useOnChain ? displayAddress?.slice(0, 16) : undefined;
+            const walletName = useOnChain ? displayAddress?.slice(0, 3).toUpperCase() : undefined;
             const declaration = await declareAnswer(sessionIdServer, currentGuess, walletAddr, walletName);
             if (declaration.onChain) {
               addLog(`On-chain TX: ${declaration.onChain.txId}`, 'info');
@@ -203,25 +204,25 @@ export const ShadowCipher = () => {
 
           setGameOver(true);
           if (useOnChain) {
-            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'MID';
-            submitScore(walletName);
+            refreshLeaderboard();
           } else {
             setShowNameEntry(true);
           }
         } else if (isLastAttempt) {
           addLog(`Result: ${result.black}✓ / ${result.white}~`, 'info');
-          // Declare final answer even on loss to record the score
+          // Declare final answer even on loss — the server records the score
           try {
-            const walletAddr = displayAddress?.slice(0, 16);
-            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'ANO';
+            const walletAddr = useOnChain ? displayAddress?.slice(0, 16) : undefined;
+            const walletName = useOnChain ? displayAddress?.slice(0, 3).toUpperCase() : undefined;
             await declareAnswer(sessionIdServer, currentGuess, walletAddr, walletName);
-          } catch { /* ignore */ }
+          } catch (declareErr) {
+            addLog(`Could not record result: ${declareErr}`, 'info');
+          }
 
           setGameOver(true);
           addLog('ACCESS_REVOKED. Maximum attempts reached.', 'info');
           if (useOnChain) {
-            const walletName = displayAddress?.slice(0, 3).toUpperCase() || 'MID';
-            submitScore(walletName);
+            refreshLeaderboard();
           } else {
             setShowNameEntry(true);
           }
@@ -272,39 +273,34 @@ export const ShadowCipher = () => {
     setIsProving(false);
   };
 
-  const submitScore = async (name: string) => {
-    const won = guesses.length > 0 && guesses[guesses.length - 1].black === 4;
-    const attempts = guesses.length;
-    const address = useOnChain && displayAddress
-      ? displayAddress.slice(0, 16)
-      : `DMO_${name}`;
-
+  const refreshLeaderboard = async () => {
     try {
-      await fetch('/api/metrics/scores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          address,
-          displayName: name,
-          attempts,
-          won,
-          mode: useOnChain ? 'on-chain' : 'demo',
-        }),
-      });
-      addLog(`Score recorded: ${name} — ${attempts} attempts`, 'info');
-      // Refresh leaderboard
       const lb = await fetch('/api/metrics/leaderboard?limit=5').then(r => r.ok ? r.json() : null);
       if (lb?.entries) setLeaderboard(lb.entries);
-    } catch {
-      addLog('Could not record score (API unavailable)', 'info');
+    } catch { /* ignore */ }
+  };
+
+  // The score itself is recorded server-side by /api/declare; the name entry
+  // only attaches the arcade initials to that session's leaderboard row.
+  const submitName = async (name: string) => {
+    if (sessionIdServer) {
+      try {
+        await submitDisplayName(sessionIdServer, name);
+        addLog(`Name recorded: ${name} — ${guesses.length} attempts`, 'info');
+      } catch {
+        addLog('Could not record name (API unavailable)', 'info');
+      }
+    } else {
+      addLog('Local demo — score not recorded on leaderboard', 'info');
     }
+    await refreshLeaderboard();
     setScoreSubmitted(true);
   };
 
   const handleNameSubmit = () => {
     const name = arcadeName.join('');
     setShowNameEntry(false);
-    submitScore(name);
+    submitName(name);
   };
 
   const cycleNameChar = (slot: number, direction: number) => {

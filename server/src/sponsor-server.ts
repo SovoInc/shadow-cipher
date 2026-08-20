@@ -13,6 +13,8 @@ import {
   updateSession,
   deleteSession,
   recordScore,
+  updateDisplayName,
+  setOnSessionsExpired,
   generateRandomCode,
   generateRandomSalt,
   hexToBytes,
@@ -28,6 +30,13 @@ let walletCtxGlobal: WalletContext | null = null;
 let providersGlobal: any = null;
 let configGlobal: import('./config.js').Config | null = null;
 let sharedContractAddress: string | null = null;
+
+// Sessions whose result /api/declare has already recorded, mapped to the
+// leaderboard address key it recorded under. The name-entry overlay may
+// rename that row (and only that row) within this window — it can never
+// create rows or touch counters. See POST /api/session/name.
+const completedSessions = new Map<string, string>();
+const NAME_WINDOW_MS = 10 * 60 * 1000;
 
 export function setSponsorLogger(_logger: Logger): void {
   logger = _logger;
@@ -65,6 +74,13 @@ export async function startSponsorServer(
 
   // Log current pool size
   getPoolSize().then(size => logger.info(`Game pool: ${size} pre-created games ready`)).catch(() => {});
+
+  // Release active-session slots when the TTL sweep removes abandoned
+  // on-chain sessions, so pool refill is never paused forever.
+  setOnSessionsExpired((count) => {
+    logger.warn(`Sweep removed ${count} expired on-chain session(s); releasing active-session slots`);
+    for (let i = 0; i < count; i++) decrementActiveSessions();
+  });
 
   // Start background pool refill
   runPoolRefill(providersGlobal, sharedContractAddress!, logger, walletCtxGlobal!).catch(err => {
@@ -259,14 +275,20 @@ export async function startSponsorServer(
         }
       }
 
-      // Record score
+      // Record score — this is the ONLY path that touches gamesPlayed/gamesWon.
+      // With no wallet address the row is keyed by session, so the same key is
+      // reused when the name-entry overlay renames it via /api/session/name.
       const mode = session.contractAddress ? 'on-chain' : 'demo';
-      const playerAddress = address || `DMO_${displayName || 'ANO'}`;
+      const playerAddress = address || `DMO_${sessionId.slice(0, 8).toUpperCase()}`;
       const playerName = displayName || playerAddress.slice(0, 3);
       await recordScore(playerAddress, playerName, attempts, won, mode);
 
-      // Clean up
-      decrementActiveSessions();
+      // Allow a follow-up display-name update for this session's row only.
+      completedSessions.set(sessionId, playerAddress);
+      setTimeout(() => completedSessions.delete(sessionId), NAME_WINDOW_MS).unref();
+
+      // Clean up (only on-chain sessions hold an active-session slot)
+      if (session.contractAddress) decrementActiveSessions();
       await deleteSession(sessionId);
 
       res.json({
@@ -276,6 +298,37 @@ export async function startSponsorServer(
         attempts,
         secret: session.code,
         onChain,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Associate an arcade display name with a finished session's leaderboard
+  // row. Renames only — never creates rows or increments counters, so it
+  // cannot be used to forge scores (replaces the old POST /api/metrics/scores).
+  app.post('/api/session/name', async (req, res) => {
+    try {
+      const { sessionId, displayName } = req.body as { sessionId?: string; displayName?: string };
+      if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'sessionId is required' });
+      }
+      if (!displayName || typeof displayName !== 'string' || displayName.trim().length === 0 || displayName.length > 24) {
+        return res.status(400).json({ error: 'displayName must be 1-24 characters' });
+      }
+
+      const playerAddress = completedSessions.get(sessionId);
+      if (!playerAddress) {
+        return res.status(404).json({ error: 'Session not found or name window expired' });
+      }
+
+      const player = await updateDisplayName(playerAddress, displayName.trim());
+      completedSessions.delete(sessionId);
+      if (!player) return res.status(404).json({ error: 'Player not found' });
+
+      res.json({
+        updated: true,
+        player: { address: player.address, displayName: player.displayName, bestScore: player.bestScore },
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

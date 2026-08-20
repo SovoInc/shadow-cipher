@@ -8,7 +8,7 @@
     "build": "npm run copy-shadowcipher-keys && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "copy-shadowcipher-keys": "mkdir -p ./public/midnight/shadowcipher/keys && mkdir -p ./public/midnight/shadowcipher/zkir && cp -r ../shadowcipher-contract/src/managed/shadowcipher/keys/* ./public/midnight/shadowcipher/keys && cp -r ../shadowcipher-contract/src/managed/shadowcipher/zkir/* ./public/midnight/shadowcipher/zkir"
+    "copy-shadowcipher-keys": "rm -rf ./public/midnight/shadowcipher/keys ./public/midnight/shadowcipher/zkir && mkdir -p ./public/midnight/shadowcipher/keys ./public/midnight/shadowcipher/zkir && cp -r ../shadowcipher-contract/src/managed/shadowcipher/keys/* ./public/midnight/shadowcipher/keys && cp -r ../shadowcipher-contract/src/managed/shadowcipher/zkir/* ./public/midnight/shadowcipher/zkir"
   },
   "dependencies": {
     "@meshsdk/shadowcipher-contract": "file:../shadowcipher-contract",

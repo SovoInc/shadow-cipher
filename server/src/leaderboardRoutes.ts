@@ -2,7 +2,6 @@
 // Mounted by sponsor-server.ts.
 
 import { Router, type Request, type Response } from 'express';
-import { recordScore } from './kvStore.js';
 import {
   APP_NAME,
   APP_DESCRIPTION,
@@ -27,31 +26,9 @@ export function buildLeaderboardRouter(): Router {
     res.json({ name: APP_NAME, description: APP_DESCRIPTION, achievements: liveAchievements, channels });
   });
 
-  // POST /api/metrics/scores — record a game result (client-reported, trusted-ish)
-  router.post('/metrics/scores', async (req: Request, res: Response) => {
-    const { address, displayName, attempts, won, mode } = req.body || {};
-    if (!address || typeof address !== 'string') return res.status(400).json({ error: 'address is required' });
-    if (typeof attempts !== 'number' || attempts < 1 || attempts > 10) return res.status(400).json({ error: 'attempts must be 1-10' });
-    if (typeof won !== 'boolean') return res.status(400).json({ error: 'won must be a boolean' });
-
-    const player = await recordScore(
-      address,
-      displayName || address.slice(0, 3),
-      attempts,
-      won,
-      mode === 'on-chain' ? 'on-chain' : 'demo',
-    );
-    res.json({
-      recorded: true,
-      player: {
-        address: player.address,
-        displayName: player.displayName,
-        bestScore: player.bestScore,
-        gamesPlayed: player.gamesPlayed,
-        gamesWon: player.gamesWon,
-      },
-    });
-  });
+  // NOTE: there is deliberately no POST /api/metrics/scores. Scores are
+  // recorded exclusively server-side by POST /api/declare (sponsor-server.ts);
+  // the name-entry overlay uses POST /api/session/name, which only renames.
 
   // GET /api/metrics/users/:address — identity + per-channel stats for a wallet
   router.get('/metrics/users/:address', async (req: Request, res: Response) => {
@@ -101,8 +78,8 @@ export function buildLeaderboardRouter(): Router {
   });
 
   // GET /api/metrics/:channel — ranked entries for a channel (leaderboard, transactions)
-  // Registered AFTER /metrics/users/:address and /metrics/scores so those static/specific
-  // paths win; Express matches in declaration order.
+  // Registered AFTER /metrics/users/:address so that more specific path wins;
+  // Express matches in declaration order.
   router.get('/metrics/:channel', async (req: Request, res: Response) => {
     const channelId = String(req.params.channel ?? '');
     if (!channelId) return res.status(400).json({ error: 'Missing channel parameter' });

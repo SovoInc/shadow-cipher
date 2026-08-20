@@ -1,8 +1,13 @@
 # QA Test Report — Shadow Cipher
 
-**Date:** 2026-08-06
-**Commit under test:** `707f4c7f`
+**Date:** 2026-08-20
+**Baseline reviewed:** `9aa28622`; the fixes recorded below are included in this revision.
 **Environment:** local checkout; static analysis and code review. No live mainnet session was played against the deployed EC2 instance.
+
+> **Status:** the High-severity leaderboard defects (Issues 1 and 2), the pool-stalling
+> session leak (Issue 3), the stale ZK keys (Issue 7), and the misleading root
+> documentation (Issue 6) have been resolved. Each is marked **Resolved** below with the
+> fix applied. Remaining open issues are Medium and Low.
 
 ---
 
@@ -12,17 +17,18 @@ Shadow Cipher is a Mastermind variant on Midnight: crack a 4-position, 6-colour 
 
 The core design is solid: **the server is authoritative for game logic.** Peg feedback is computed server-side from the stored code (`sponsor-server.ts:206`), the secret never reaches the browser, and the attempt cap is enforced on the server. Code generation uses `crypto.randomInt`, not `Math.random`.
 
-Against that, **the repository contains no tests of any kind**, two of the four documents describe a different project entirely, and the leaderboard double-counts every game.
+Against that, **the repository contains no tests of any kind** — the single largest remaining gap.
 
 | Area | Status |
 |---|---|
 | Contract design (commit/reveal) | Sound |
 | Server-authoritative game logic | Good |
+| Leaderboard integrity | Fixed — single server-side write path |
 | Automated tests | **None — zero test files repo-wide** |
 | CI quality gate | **None** — deploys unverified |
-| Root documentation | **Stale — describes the counter template** |
+| Root documentation | Rewritten to match the shipped app |
 
-**Recommendation:** the game logic is in reasonable shape, but the leaderboard is not trustworthy (Issue 1) and the deployment documentation would not successfully deploy the app (Issue 6). Both should be addressed before wider release.
+**Recommendation:** the leaderboard and documentation blockers are resolved and the game logic is in good shape. The remaining risk is process rather than product: there is still no test suite and no CI quality gate, so nothing prevents a regression from reaching production. Adding tests for `calculatePegs` and `recordScore` plus a typecheck gate before deploy is the highest-value next step.
 
 ---
 
@@ -49,8 +55,8 @@ Test infrastructure is declared but non-functional:
 
 | Target | Why |
 |---|---|
-| `calculatePegs()` (`kvStore.ts:300-328`) | The core game rule. Pure function; duplicate-colour peg counting is exactly the logic that breaks silently |
-| `recordScore()` (`kvStore.ts:240+`) | Where Issue 1 lives — non-idempotent by construction |
+| `calculatePegs()` (`kvStore.ts:331`) | The core game rule. Pure function; duplicate-colour peg counting is exactly the logic that breaks silently |
+| `recordScore()` (`kvStore.ts:251`) | Now the single scoring path (Issue 1 fix), so a regression here is entirely unguarded |
 | Contract circuits via a simulator | `create_game` / `submit_guess` / `delete_game` are entirely unverified |
 | `/api/guess` attempt-cap enforcement | Server-side rule with no regression test |
 
@@ -67,9 +73,9 @@ Two aggravating details:
 
 Ordered by impact.
 
-### Issue 1 — Every game is counted twice on the leaderboard (High)
+### Issue 1 — Every game is counted twice on the leaderboard (High) — **Resolved**
 
-Two independent code paths call `recordScore()` for a single game:
+Two independent code paths called `recordScore()` for a single game:
 
 1. `POST /api/declare` calls it server-side (`sponsor-server.ts:266`).
 2. The client then *also* calls `submitScore` (`pages/shadowcipher/index.tsx:207`, or `:307` via the name-entry overlay), which POSTs `/api/metrics/scores` → `recordScore()` again (`leaderboardRoutes.ts:37`).
@@ -81,58 +87,72 @@ gamesPlayed: current.gamesPlayed + 1,
 gamesWon: current.gamesWon + (won ? 1 : 0),
 ```
 
-So one game adds 2 to `gamesPlayed`, and a win adds 2 to `gamesWon`.
+So one game added 2 to `gamesPlayed`, and a win added 2 to `gamesWon`.
 
-Worse, the two paths key on **different addresses**: the server uses `address || \`DMO_${displayName}\`` (`sponsor-server.ts:264`) while the client sends `displayAddress.slice(0, 16)` (`index.tsx:278-280`). A single player can therefore be split across two leaderboard rows. All current leaderboard figures should be treated as unreliable.
+Worse, the two paths keyed on **different addresses**: the server used `address || \`DMO_${displayName}\`` (`sponsor-server.ts:264`) while the client sent `displayAddress.slice(0, 16)` (`index.tsx:278-280`), so a single player could be split across two leaderboard rows.
 
-### Issue 2 — Score submission is unauthenticated and client-trusted (High, security)
+**Fix.** `POST /api/declare` is now the only path that touches `gamesPlayed`, `gamesWon`, or `bestScore`. The client's score-reporting call is gone. Where no wallet address exists the row is keyed by session (`DMO_<first-8-of-sessionId>`) rather than by display name, so the key is stable and known before the player types a name.
 
-`POST /api/metrics/scores` accepts a result from anyone. The route's own comment concedes the point (`leaderboardRoutes.ts:30`):
+**Leaderboard data.** Figures accumulated before this fix remain inflated (roughly 2× on games played and won, with some players split across rows). The counters are not self-correcting, so the `players` table should be reset — or halved — before the leaderboard is presented as accurate.
+
+### Issue 2 — Score submission is unauthenticated and client-trusted (High, security) — **Resolved**
+
+`POST /api/metrics/scores` accepted a result from anyone. The route's own comment conceded the point (`leaderboardRoutes.ts:30`):
 
 ```js
 // POST /api/metrics/scores — record a game result (client-reported, trusted-ish)
 ```
 
-Validation is limited to `attempts` being 1-10 and `won` being a boolean (lines 33-35). There is no session check, no auth, and no rate limit — anyone can curl a perfect score onto the leaderboard for any address.
+Validation was limited to `attempts` being 1-10 and `won` being a boolean. There was no session check, no auth, and no rate limit — anyone could curl a perfect score onto the leaderboard for any address. This was the one place the otherwise server-authoritative design was bypassed.
 
-This is the one place the otherwise server-authoritative design is bypassed. Since `/api/declare` already records the true result, this endpoint is largely redundant; removing it would fix Issue 1 and Issue 2 together.
+**Fix.** The endpoint is removed. Scores are recorded only by `/api/declare`, from the server's own evaluation of the guess against the stored secret code.
 
-### Issue 3 — Abandoned sessions permanently stall the game pool (Medium)
+The arcade name-entry overlay (which runs *after* the game ends, so it cannot be folded into declare) now calls a replacement endpoint, `POST /api/session/name`. It performs a rename only — `UPDATE players SET display_name … WHERE address = ?` — and can neither create rows nor alter any counter, so it cannot be used to forge a score. It resolves the target row through a server-side session→address map with a 10-minute window, so a caller cannot rename an arbitrary player's row either.
 
-`incrementActiveSessions()` is called at `sponsor-server.ts:148` and `:167`; `decrementActiveSessions()` only at `:269`, inside `/api/declare`. A player who closes the tab mid-game never decrements the counter. The 1-hour TTL sweep (`kvStore.ts:126`) deletes the session row but **does not touch the in-memory counter**.
+### Issue 3 — Abandoned sessions permanently stall the game pool (Medium) — **Resolved**
 
-`poolWorker.ts:32-36` pauses refill whenever `isGameSessionActive()` is true, so a few abandoned games permanently disable pool generation. Subsequent players fall through to on-demand creation or demo mode. This degrades quietly, with no error in the logs.
+`incrementActiveSessions()` was called at `sponsor-server.ts:148` and `:167`; `decrementActiveSessions()` only inside `/api/declare`. A player who closed the tab mid-game never decremented the counter, and the 1-hour TTL sweep deleted the session row without touching the in-memory counter.
+
+Because `poolWorker.ts:32-36` pauses refill whenever `isGameSessionActive()` is true, a few abandoned games permanently disabled pool generation, quietly, with no error in the logs.
+
+**Fix.** The TTL sweep now counts the expired sessions that hold a slot (`contract_addr IS NOT NULL`) before deleting them and releases one slot per session via a callback registered by the sponsor server, logging a warning as it does. The existing clamp in `decrementActiveSessions()` keeps the counter at or above zero.
+
+A matching defect in the opposite direction was fixed alongside it: `/api/declare` decremented unconditionally, including for demo sessions that never incremented. The decrement is now conditional on `session.contractAddress`, so it mirrors the two increment sites exactly and the counter cannot drift low either.
 
 ### Issue 4 — On-chain failure is invisible to the player (Medium)
 
-`sponsor-server.ts:256-259` catches a failed proof submission and only logs a warning; the response still returns `correct: won` with `onChain: null`. Client-side, `index.tsx:200-202` turns that into a log line while the player still sees a win.
+`sponsor-server.ts:272-275` catches a failed proof submission and only logs a warning; the response still returns `correct: won` with `onChain: null`. Client-side, `index.tsx:198-201` logs the transaction only when `declaration.onChain` is present, so a skipped proof passes silently while the player still sees a win.
 
 A player in on-chain mode can win, be told they won, and have nothing recorded on-chain. Given that on-chain verification is the product's premise, this should be surfaced explicitly rather than degraded silently.
 
 ### Issue 5 — Proof progress indicators are fabricated (Medium, correctness of claims)
 
-In local-fallback mode the UI simulates proving (`index.tsx:234-239`):
+In local-fallback mode the UI simulates proving (`index.tsx:235-240`):
 
 ```js
 const steps = ['Hashing input...', 'Applying constraints...', 'Satisfying R1CS...', 'Extracting Proof...'];
 for (let i = 0; i < steps.length; i++) { addLog(steps[i], 'proof'); await sleep(400); setProgress((i + 1) * 25); }
 ```
 
-followed by a plain JavaScript comparison. No proof is generated. In server mode the bar is likewise hardcoded `setProgress(25) → (75) → (100)` (`:181-190`) rather than reflecting real work. The R1CS/constraint vocabulary implies cryptographic work that is not happening.
+followed by a plain JavaScript comparison. No proof is generated. In server mode the bar is likewise hardcoded `setProgress(25) → (75) → (100)` (`:179-189`) rather than reflecting real work. The R1CS/constraint vocabulary implies cryptographic work that is not happening.
 
-### Issue 6 — Root documentation describes a different project (Medium)
+### Issue 6 — Root documentation describes a different project (Medium) — **Resolved**
 
-**`README.md`** is the unmodified **EDDA Midnight Starter Template** readme. It is titled "🚀 EDDA - Midnight Starter Template", links a demo at `counter.nebula.builders`, and documents a project structure of `counter-cli/`, `counter-contract/`, and `frontend-vite-react/` — only the last of which exists. It references `counter-cli/.env_template` and `npm run setup-standalone`, neither of which exist, and targets the Preview network with a Preview faucet while the app is mainnet-only. Nothing in it mentions Shadow Cipher, the server workspace, the game, or the sponsor model.
+**`README.md`** was the unmodified **EDDA Midnight Starter Template** readme, titled "🚀 EDDA - Midnight Starter Template", linking a demo at `counter.nebula.builders` and documenting a structure of `counter-cli/`, `counter-contract/`, and `frontend-vite-react/` — only the last of which exists. It referenced `counter-cli/.env_template` and `npm run setup-standalone`, neither of which exist, and targeted the Preview network while the app is mainnet-only. Nothing in it mentioned Shadow Cipher, the server workspace, the game, or the sponsor model.
 
-**`DEPLOYMENT_PROCEDURE.md`** documents a **Vercel** deployment end to end. The project was migrated to AWS EC2 (commit `9d93048f`) and now deploys via SSH/rsync/PM2. There is no `vercel.json` in the tree. Every path reference is to the counter template (`counter-contract`, `/midnight/counter/keys/increment.verifier`). **Following this document would not deploy the application.**
+**`DEPLOYMENT_PROCEDURE.md`** documented a **Vercel** deployment end to end. The project was migrated to AWS EC2 (commit `9d93048f`) and deploys via SSH/rsync/PM2. Every path reference was to the counter template. **Following that document would not have deployed the application.**
 
-By contrast, `docs/gameplay.md` and `docs/midnight-integration.md` are accurate, current, and detailed — I verified their claims against source and they match. Note that `git status` shows `?? docs/`: **the two good documents are untracked and uncommitted**, while the two misleading ones are tracked.
+**Fix.** Both are rewritten from the shipped code. The README now covers the game, the sponsor-server model, the real workspace layout, install/build/run steps, and a full environment-variable table (names and defaults only, no secret values) — every default verified against `config.ts`, `kvStore.ts`, `poolWorker.ts`, and `index.ts`. `DEPLOYMENT_PROCEDURE.md` is rewritten from `.github/workflows/deploy.yml` and documents the Actions trigger, the lockfile-deletion workaround and its unpinned-install consequence, the rsync/PM2 steps, the required repo secrets, the network-default caveat below, the health-check limitation, and the manual deploy path.
 
-### Issue 7 — Stale ZK keys shipped to the browser (Medium)
+`docs/gameplay.md` and `docs/midnight-integration.md` were already accurate — verified against source — but untracked. They are now committed.
 
-`frontend-vite-react/public/midnight/shadowcipher/zkir/` contains keys for five circuits: the three that exist plus orphaned **`initialize`** and **`record_guess`** from an earlier contract revision. The contract source defines only three, and `shadowcipher-contract/src/managed/shadowcipher/zkir/` correctly has three.
+### Issue 7 — Stale ZK keys shipped to the browser (Medium) — **Resolved**
 
-The cause is `copy-shadowcipher-keys` (`frontend-vite-react/package.json:11`), which uses `cp -r` without clearing the target, so removed circuits are never pruned. This is precisely the mismatched-verifier-key failure mode that `DEPLOYMENT_PROCEDURE.md:109` warns about. The copy step should `rm -rf` the destination first.
+`frontend-vite-react/public/midnight/shadowcipher/` contained keys for five circuits: the three that exist plus orphaned **`initialize`** and **`record_guess`** from an earlier contract revision.
+
+The cause was `copy-shadowcipher-keys` (`frontend-vite-react/package.json:11`), which used `cp -r` without clearing the target, so removed circuits were never pruned. This is precisely the mismatched-verifier-key failure mode the deployment procedure warns about.
+
+**Fix.** The eight orphaned artifacts are deleted, and the copy step now does `rm -rf` on both destination directories before recreating and copying, so a removed circuit is pruned on every build. Verified after a full frontend build: `public/` and `dist/` contain exactly `create_game`, `submit_guess`, and `delete_game`.
 
 ### Issue 8 — `delete_game` is never called; ledger grows without bound (Medium)
 
@@ -142,13 +162,13 @@ The contract implements `delete_game` for storage reclamation (`shadowcipher.com
 
 `docs/midnight-integration.md:121` states the game runs mainnet only. But `config.ts:42` and `deploy.yml:59` both default to **preprod** when `MIDNIGHT_NETWORK` is unset. A missing CI secret silently deploys against the wrong network rather than failing loudly.
 
-Related: `leaderboardRoutes.ts:153,192` hardcode `caip2: 'midnight:preview'` in two API responses while the app runs mainnet — the wrong chain identifier is served to clients.
+Related: `leaderboardRoutes.ts:131,166` hardcode `caip2: 'midnight:preview'` in two API responses while the app runs mainnet — the wrong chain identifier is served to clients.
 
 ### Issue 10 — Contract does not constrain the guess domain (Low)
 
 `submit_guess` accepts `Uint<8>` (0-255) per position while the game domain is 0-5, with no range assertion. Out-of-domain guesses simply prove false rather than being rejected. Harmless today because the server constructs the guess, but the circuit does not enforce the rule it appears to.
 
-Similarly, the contract holds no attempt counter — the 10-attempt cap exists only on the server (`sponsor-server.ts:202-204`). The chain sees only the final winning guess.
+Similarly, the contract holds no attempt counter — the 10-attempt cap exists only on the server (`sponsor-server.ts:219`). The chain sees only the final winning guess.
 
 ### Issue 11 — Documented achievement not implemented (Low)
 
@@ -156,7 +176,7 @@ Similarly, the contract holds no attempt counter — the 10-attempt cap exists o
 
 ### Issue 12 — Proof-server health check always passes (Low)
 
-`wallet-widget/utils/proofServer/utils.ts:11-16` has its actual assertion commented out and returns unconditionally:
+`wallet-widget/utils/proofServer/utils.ts:13-18` has its actual assertion commented out and returns unconditionally:
 
 ```js
 // if (text.includes("We're alive 🎉!")) {
@@ -187,12 +207,12 @@ Any 2xx response is treated as a healthy proof server.
 
 Collected because they make the above harder to diagnose in production:
 
-- `index.tsx:218` — `} catch { /* ignore */ }` around the **loss-path** `declareAnswer`. A failed call means the game is silently unrecorded.
-- `index.tsx:466` — `.catch(() => {}); // Silently fail if API unavailable`
+- ~~`index.tsx:218` — `} catch { /* ignore */ }` around the **loss-path** `declareAnswer`. A failed call means the game is silently unrecorded.~~ **Fixed** — the failure is now surfaced in the player-visible log.
+- `index.tsx:462` — `.catch(() => {}); // Silently fail if API unavailable`
 - `api.ts:479`, `:516` — dust-cache save failures swallowed, firing every 15 s and 30 s.
 - `api.ts:405-407` — corrupt wallet-cache JSON silently treated as "no cache".
-- `kvStore.ts:127` — the expired-session sweep swallows all errors and can fail permanently unnoticed.
-- `sponsor-server.ts:304` — a database error is reported to clients as "pool is empty".
+- `kvStore.ts:143` — the expired-session sweep swallows all errors and can fail permanently unnoticed. (The sweep now also releases active-session slots per Issue 3, so a silent failure there stalls pool refill as well.)
+- `sponsor-server.ts:357` — a failed `getPoolSize()` is flattened to `0`, so a database error is reported to clients as an empty pool.
 
 ---
 
@@ -209,10 +229,15 @@ Worth recording, since the issue list above is necessarily one-sided:
 
 ## 6. Suggested priorities
 
-1. Remove the client-side `submitScore` path, or make `recordScore` idempotent per session — fixes Issues 1 and 2 together.
-2. Decrement `activeGameSessions` in the TTL sweep (Issue 3).
-3. Replace `README.md` and `DEPLOYMENT_PROCEDURE.md`, and commit `docs/` (Issue 6).
-4. Add `rm -rf` to the key-copy step (Issue 7).
-5. Add a CI job running typecheck and lint before deploy, and restore lockfile-based installs.
-6. Surface on-chain failure in the UI instead of degrading silently (Issue 4).
-7. Add tests for `calculatePegs` and `recordScore` — both are pure and cheap to cover.
+Resolved in this revision: Issues 1, 2, 3, 6, and 7 (see each entry above).
+
+Remaining, in recommended order:
+
+1. **Reset or halve the `players` table** before presenting the leaderboard as accurate — the Issue 1 fix stops further inflation but does not repair rows already double-counted.
+2. Add tests for `calculatePegs` and `recordScore` — both are pure and cheap to cover, and `recordScore` is now the single scoring path, so a regression there is unguarded.
+3. Add a CI job running typecheck and lint before deploy, and restore lockfile-based installs (`deploy.yml` currently deletes `package-lock.json`, so production builds are not reproducible).
+4. Surface on-chain failure in the UI instead of degrading silently (Issue 4).
+5. Replace the fabricated proof-progress vocabulary with honest status text (Issue 5).
+6. Set `MIDNIGHT_NETWORK` explicitly in CI and fail loudly rather than defaulting to preprod on a mainnet app (Issue 9).
+7. Wire up `delete_game` or drop it from the shipped circuits (Issue 8).
+8. Restore the real assertion in the proof-server health check (Issue 12).

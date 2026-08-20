@@ -79,6 +79,14 @@ export const declareAnswer = (
 ): Promise<DeclareResponse> =>
   post('/api/declare', { sessionId, guess, address, displayName });
 
+/** Associate an arcade display name with a finished session's leaderboard row.
+ *  Rename only — the score itself was already recorded by declareAnswer. */
+export const submitDisplayName = (
+  sessionId: string,
+  displayName: string,
+): Promise<{ updated: boolean }> =>
+  post('/api/session/name', { sessionId, displayName });
+
 /** Check sponsor server health. */
 export const getStatus = (): Promise<StatusResponse> =>
   get('/api/status');
